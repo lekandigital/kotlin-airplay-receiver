@@ -1,8 +1,6 @@
 # Receiver
 
-<p align="center">
-  <img src="docs/icon-256.png" width="128" height="128" alt="Receiver icon">
-</p>
+![Icon](docs/icon-256.png)
 
 Receiver is a small Android AirPlay receiver tailored for the Lenovo ThinkSmart View. It was custom made for the device and the project background is described in [this Tao of Mac post](https://taoofmac.com/space/blog/2023/04/22/1330).
 
