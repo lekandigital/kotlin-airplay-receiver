@@ -1,2 +1,3 @@
 # Ignore specific vendored directories
 app/src/main/cpp/** linguist-vendored=true
+app/src/main/java/** linguist-vendored=true
