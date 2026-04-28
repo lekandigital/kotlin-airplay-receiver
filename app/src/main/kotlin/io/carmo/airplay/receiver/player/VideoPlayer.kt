@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import android.view.Surface
 import io.carmo.airplay.receiver.model.NALPacket
@@ -18,6 +19,7 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     @Volatile private var isStopped = false
 
     fun addPacket(packet: NALPacket) {
+        trimBacklog()
         if (!packets.offer(packet)) {
             packets.poll()?.release()
             if (!packets.offer(packet)) {
@@ -31,6 +33,7 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     }
 
     override fun run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY)
         initDecoder()
         while (!isStopped) {
             try {
@@ -62,6 +65,10 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
             if (decoderSupportsAdaptivePlayback(decoderInfo, MIME_TYPE)) {
                 videoFormat.setInteger(MediaFormat.KEY_MAX_WIDTH, VIDEO_WIDTH)
                 videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, VIDEO_HEIGHT)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                videoFormat.setInteger(MediaFormat.KEY_PRIORITY, 0)
+                videoFormat.setFloat(MediaFormat.KEY_OPERATING_RATE, VIDEO_OPERATING_RATE)
             }
 
             codec.configure(videoFormat, surface, null, 0)
@@ -116,6 +123,12 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
         }
     }
 
+    private fun trimBacklog() {
+        while (packets.size >= MAX_QUEUED_FRAMES) {
+            packets.poll()?.release() ?: return
+        }
+    }
+
     private fun drainPackets() {
         while (true) {
             packets.poll()?.release() ?: break
@@ -138,10 +151,12 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 6
+        private const val MAX_BUFFERED_FRAMES = 3
+        private const val MAX_QUEUED_FRAMES = 2
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720
+        private const val VIDEO_OPERATING_RATE = 60.0f
         private const val TIMEOUT_USEC = 1000L
 
         private fun decoderSupportsAdaptivePlayback(decoderInfo: MediaCodecInfo, mimeType: String): Boolean {

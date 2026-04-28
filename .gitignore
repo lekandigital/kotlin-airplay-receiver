@@ -11,3 +11,5 @@
 /app/build/
 /app/release/
 *.jks
+*.p12
+signing.properties

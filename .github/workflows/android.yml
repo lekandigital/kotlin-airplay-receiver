@@ -17,6 +17,12 @@ jobs:
   build:
     name: Build Receiver
     runs-on: ubuntu-latest
+    env:
+      RECEIVER_RELEASE_KEYSTORE_BASE64: ${{ secrets.RECEIVER_RELEASE_KEYSTORE_BASE64 }}
+      RECEIVER_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RECEIVER_RELEASE_KEYSTORE_PASSWORD }}
+      RECEIVER_RELEASE_KEY_ALIAS: ${{ secrets.RECEIVER_RELEASE_KEY_ALIAS }}
+      RECEIVER_RELEASE_KEY_PASSWORD: ${{ secrets.RECEIVER_RELEASE_KEY_PASSWORD }}
+      RECEIVER_RELEASE_KEYSTORE_TYPE: ${{ secrets.RECEIVER_RELEASE_KEYSTORE_TYPE }}
 
     steps:
       - name: Check out sources
@@ -44,6 +50,19 @@ jobs:
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
+
+      - name: Configure release signing
+        if: env.RECEIVER_RELEASE_KEYSTORE_BASE64 != ''
+        run: |
+          mkdir -p app/keystore
+          echo "$RECEIVER_RELEASE_KEYSTORE_BASE64" | base64 --decode > app/keystore/receiver-release.p12
+          {
+            echo "storeFile=keystore/receiver-release.p12"
+            echo "storePassword=$RECEIVER_RELEASE_KEYSTORE_PASSWORD"
+            echo "keyAlias=$RECEIVER_RELEASE_KEY_ALIAS"
+            echo "keyPassword=$RECEIVER_RELEASE_KEY_PASSWORD"
+            echo "storeType=${RECEIVER_RELEASE_KEYSTORE_TYPE:-pkcs12}"
+          } > signing.properties
 
       - name: Build release APK
         run: ./gradlew --no-daemon assembleRelease

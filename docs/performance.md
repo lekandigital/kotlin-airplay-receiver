@@ -13,6 +13,8 @@ Android 8.1 is old enough that the app avoids newer platform APIs and keeps `min
 
 The UI layer is intentionally static after launch. There are no animations, timers, progress bars, polling widgets, or settings controls competing with decode and audio playback.
 
+The foreground activity also sets `FLAG_KEEP_SCREEN_ON` so the ThinkSmart View display does not dim while Receiver is active.
+
 ## Display And Decode
 
 The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver configures the decoder for 1280x720 and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
@@ -36,8 +38,11 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a small fixed-size `ArrayBlockingQueue` capped at 6 frames; when full, the oldest frame is dropped.
-- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 24 PCM packets; when full, the oldest PCM packet is dropped.
+- Video uses a small fixed-size `ArrayBlockingQueue` capped at 3 frames and trims backlog before enqueueing new packets.
+- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 8 PCM packets; when full, the oldest PCM packet is dropped.
+- Playback threads request Android's urgent display/audio thread priorities.
+- The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
+- Audio writes use non-blocking `AudioTrack` writes so full platform buffers do not grow receiver-side latency.
 - Decode and playback threads poll with short timeouts so shutdown is responsive.
 - Frame-level logging is behind `DEBUG_FRAMES = false`.
 

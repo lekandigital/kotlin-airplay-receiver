@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import android.os.Process
 import io.carmo.airplay.receiver.model.PCMPacket
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -25,6 +26,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     }
 
     override fun run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         while (!isStopped) {
             try {
                 packets.poll(250, TimeUnit.MILLISECONDS)?.let(::play)
@@ -52,7 +54,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
         try {
             packet.data.position(0)
             packet.data.limit(packet.size)
-            track?.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING)
+            track?.write(packet.data, packet.size, AudioTrack.WRITE_NON_BLOCKING)
         } finally {
             packet.release()
         }
@@ -70,7 +72,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
             minBufferSize = SAMPLE_RATE / 10 * 2 * 2
         }
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -93,12 +95,17 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
             @Suppress("DEPRECATION")
             AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE, CHANNELS, AUDIO_FORMAT, minBufferSize, AudioTrack.MODE_STREAM)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioTrack.setBufferSizeInFrames(minBufferSize / BYTES_PER_FRAME)
+        }
+        return audioTrack
     }
 
     companion object {
-        private const val MAX_BUFFERED_PACKETS = 24
+        private const val MAX_BUFFERED_PACKETS = 8
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val BYTES_PER_FRAME = 4
     }
 }

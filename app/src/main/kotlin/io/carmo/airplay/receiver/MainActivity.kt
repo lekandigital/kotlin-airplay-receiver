@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceView
 import android.view.View
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -45,6 +46,7 @@ class MainActivity : Activity() {
     }
 
     private fun keepPlaybackSurfaceFullScreen() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION

@@ -1,17 +1,48 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
+import java.util.Properties
+
+def releaseSigningFile = rootProject.file("signing.properties")
+def releaseSigning = new Properties()
+if (releaseSigningFile.exists()) {
+    releaseSigningFile.withInputStream { releaseSigning.load(it) }
+}
+
 android {
     compileSdk 31
     namespace "io.carmo.airplay.receiver"
 
+    signingConfigs {
+        debug {
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+
+        release {
+            if (releaseSigningFile.exists()) {
+                storeFile file(releaseSigning["storeFile"])
+                storePassword releaseSigning["storePassword"]
+                keyAlias releaseSigning["keyAlias"]
+                keyPassword releaseSigning["keyPassword"]
+                if (releaseSigning["storeType"] != null) {
+                    storeType releaseSigning["storeType"]
+                }
+            } else {
+                initWith debug
+            }
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
     defaultConfig {
         applicationId "io.carmo.airplay.receiver"
         minSdk 27
-        targetSdk 31
+        targetSdk 27
         ndkVersion "25.1.8937393"
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.1.1"
         externalNativeBuild {
             cmake {
                 abiFilters "armeabi-v7a", "arm64-v8a"
@@ -23,7 +54,7 @@ android {
     }
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled false
         }
     }

@@ -114,7 +114,9 @@ GitHub Actions runs the release build:
 7. Upload the release APK as a workflow artifact.
 8. On tag pushes, publish a GitHub Release and attach `Receiver-release.apk`.
 
-The release build type currently uses Android's debug signing configuration so CI can produce an installable APK without storing signing secrets in the repository. For public distribution, replace that with a proper release signing configuration backed by GitHub Actions secrets.
+The release build type enables both v1 and v2 APK signature schemes so Android 8.1 package installation works with the broadest compatibility. If GitHub repository secrets provide a base64-encoded keystore, the workflow writes it to `app/keystore/receiver-release.p12`, generates a local `signing.properties`, and Gradle signs with that stable key. Without those secrets, Gradle falls back to Android debug signing so CI can still produce an ad hoc sideloadable APK without publishing private key material in the repository.
+
+The launcher icon is generated from `docs/icon-256.png` into density-specific `mipmap-*` PNG assets. The generated Android adaptive icon XML files were removed because Android 8.1 would otherwise prefer those defaults over the project icon.
 
 See `docs/performance.md` for the performance assumptions behind the Kotlin/native split and the Android 8.1 tuning choices.
 

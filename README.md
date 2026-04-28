@@ -25,6 +25,8 @@ The project is a Kotlin Android application with a native C/C++ streaming stack.
 
 The workflow in `.github/workflows/android.yml` installs the expected Android toolchain, builds the release APK on every push, pull request, or manual run, and uploads `Receiver-release.apk` as a downloadable workflow artifact. Tag pushes also create a GitHub Release and attach the APK as a release asset.
 
+Release APKs are signed with v1 and v2 APK signatures enabled for Android 8.1 compatibility. If signing secrets are configured in GitHub Actions, CI uses that stable release key; otherwise it falls back to Android debug signing for ad hoc sideloading. If Android still says "App not installed" after a signing-key change, uninstall the previous `io.carmo.airplay.receiver` build first and then install the new APK.
+
 The local Gradle wrapper is kept only so Actions can run a reproducible build from the repository. Actions uses Gradle's setup action for caching, but the wrapper still defines the Gradle version.
 
 ## Project Layout
@@ -36,6 +38,16 @@ The local Gradle wrapper is kept only so Actions can run a reproducible build fr
 - `docs/performance.md` documents the Android 8.1 performance assumptions and tuning decisions.
 - `docs/vendor-audit.md` documents the retained vendored code and the clutter removed from upstream drops.
 
+## Optional Stable Signing
+
+For upgrade-safe sideloaded releases, configure these GitHub repository secrets before tagging a release:
+
+- `RECEIVER_RELEASE_KEYSTORE_BASE64`: base64-encoded PKCS#12 or JKS keystore.
+- `RECEIVER_RELEASE_KEYSTORE_PASSWORD`: keystore password.
+- `RECEIVER_RELEASE_KEY_ALIAS`: signing key alias.
+- `RECEIVER_RELEASE_KEY_PASSWORD`: signing key password.
+- `RECEIVER_RELEASE_KEYSTORE_TYPE`: optional, defaults to `pkcs12`.
+
 ## License
 
 Receiver is distributed under GPLv3 because the retained native Playfair component is GPLv3. Third-party code keeps its original notices in the vendored source directories; see `docs/vendor-audit.md`.
@@ -45,3 +57,4 @@ Receiver is distributed under GPLv3 because the retained native Playfair compone
 - App name: `Receiver`
 - Android application id: `io.carmo.airplay.receiver`
 - Minimum Android version: Android 8.1/API 27
+- Target Android version: Android 8.1/API 27
