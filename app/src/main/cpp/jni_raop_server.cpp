@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <stddef.h>
 #include <cstring>
+#include <cstdlib>
 
 #include "lib/raop.h"
 #include "log.h"
@@ -42,6 +43,15 @@ static JNIEnv* GetJniEnv() {
     return env;
 }
 
+static void* CopyPacketData(const void* data, size_t size) {
+    void* buffer = malloc(size);
+    if (buffer == NULL) {
+        return NULL;
+    }
+    memcpy(buffer, data, size);
+    return buffer;
+}
+
 void OnRecvAudioData(void *observer, pcm_data_struct *data) {
     raop_jni_context* context = static_cast<raop_jni_context*>(observer);
     JNIEnv* jniEnv = GetJniEnv();
@@ -49,13 +59,19 @@ void OnRecvAudioData(void *observer, pcm_data_struct *data) {
         return;
     }
 
-    jshortArray sarr = jniEnv->NewShortArray(data->data_len);
-    if (sarr == NULL) {
+    const int byteSize = data->data_len * static_cast<int>(sizeof(unsigned short));
+    void* buffer = CopyPacketData(data->data, static_cast<size_t>(byteSize));
+    if (buffer == NULL) {
         return;
     }
-    jniEnv->SetShortArrayRegion(sarr, 0, data->data_len, reinterpret_cast<jshort *>(data->data));
-    jniEnv->CallVoidMethod(context->server, context->on_recv_audio_data, sarr, static_cast<jlong>(data->pts));
-    jniEnv->DeleteLocalRef(sarr);
+    jobject byteBuffer = jniEnv->NewDirectByteBuffer(buffer, byteSize);
+    if (byteBuffer == NULL) {
+        free(buffer);
+        return;
+    }
+    jniEnv->CallVoidMethod(context->server, context->on_recv_audio_data, byteBuffer, byteSize,
+                           reinterpret_cast<jlong>(buffer), static_cast<jlong>(data->pts));
+    jniEnv->DeleteLocalRef(byteBuffer);
 }
 
 
@@ -66,14 +82,19 @@ void OnRecvVideoData(void *observer, h264_decode_struct *data) {
         return;
     }
 
-    jbyteArray barr = jniEnv->NewByteArray(data->data_len);
-    if (barr == NULL) {
+    void* buffer = CopyPacketData(data->data, static_cast<size_t>(data->data_len));
+    if (buffer == NULL) {
         return;
     }
-    jniEnv->SetByteArrayRegion(barr, 0, data->data_len, reinterpret_cast<jbyte *>(data->data));
-    jniEnv->CallVoidMethod(context->server, context->on_recv_video_data, barr, data->frame_type,
+    jobject byteBuffer = jniEnv->NewDirectByteBuffer(buffer, data->data_len);
+    if (byteBuffer == NULL) {
+        free(buffer);
+        return;
+    }
+    jniEnv->CallVoidMethod(context->server, context->on_recv_video_data, byteBuffer, data->data_len,
+                           reinterpret_cast<jlong>(buffer), data->frame_type,
                            static_cast<jlong>(data->nTimeStamp), static_cast<jlong>(data->pts));
-    jniEnv->DeleteLocalRef(barr);
+    jniEnv->DeleteLocalRef(byteBuffer);
 }
 
 extern "C" void
@@ -122,8 +143,8 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     context->server = env->NewGlobalRef(object);
 
     jclass cls = env->GetObjectClass(object);
-    context->on_recv_audio_data = env->GetMethodID(cls, "onRecvAudioData", "([SJ)V");
-    context->on_recv_video_data = env->GetMethodID(cls, "onRecvVideoData", "([BIJJ)V");
+    context->on_recv_audio_data = env->GetMethodID(cls, "onRecvAudioData", "(Ljava/nio/ByteBuffer;IJJ)V");
+    context->on_recv_video_data = env->GetMethodID(cls, "onRecvVideoData", "(Ljava/nio/ByteBuffer;IJIJJ)V");
     env->DeleteLocalRef(cls);
 
     if (context->server == NULL || context->on_recv_audio_data == NULL || context->on_recv_video_data == NULL) {
@@ -175,4 +196,13 @@ Java_io_carmo_airplay_receiver_RaopServer_stop(JNIEnv* env, jobject object, jlon
         delete context;
     }
     LOGD("raop stopped");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_carmo_airplay_receiver_model_NativeMemory_free(JNIEnv* env, jobject object, jlong pointer) {
+    (void) env;
+    (void) object;
+    if (pointer != 0) {
+        free(reinterpret_cast<void*>(pointer));
+    }
 }

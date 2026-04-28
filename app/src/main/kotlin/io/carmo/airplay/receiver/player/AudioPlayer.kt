@@ -6,19 +6,21 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
 import io.carmo.airplay.receiver.model.PCMPacket
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class AudioPlayer : Thread("ReceiverAudioPlayer") {
 
-    private val packets = LinkedBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
+    private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
     private var track: AudioTrack? = createAudioTrack().also { it.play() }
     @Volatile private var isStopped = false
 
     fun addPacket(packet: PCMPacket) {
         if (!packets.offer(packet)) {
-            packets.poll()
-            packets.offer(packet)
+            packets.poll()?.release()
+            if (!packets.offer(packet)) {
+                packet.release()
+            }
         }
     }
 
@@ -37,7 +39,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     fun stopPlay() {
         isStopped = true
         interrupt()
-        packets.clear()
+        drainPackets()
         track?.run {
             flush()
             stop()
@@ -47,7 +49,19 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     }
 
     private fun play(packet: PCMPacket) {
-        track?.write(packet.data, 0, packet.data.size)
+        try {
+            packet.data.position(0)
+            packet.data.limit(packet.size)
+            track?.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING)
+        } finally {
+            packet.release()
+        }
+    }
+
+    private fun drainPackets() {
+        while (true) {
+            packets.poll()?.release() ?: break
+        }
     }
 
     private fun createAudioTrack(): AudioTrack {
@@ -82,7 +96,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     }
 
     companion object {
-        private const val MAX_BUFFERED_PACKETS = 96
+        private const val MAX_BUFFERED_PACKETS = 24
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT

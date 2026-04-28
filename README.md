@@ -9,13 +9,13 @@ The application starts listening as soon as it is launched. There is no in-app c
 ## What It Does
 
 - Advertises itself on the local network as an AirPlay/RAOP target using the Android device name.
-- Receives H.264 screen mirroring and renders it to a full-screen `SurfaceView`.
+- Receives H.264 screen mirroring and renders it to a centered proportional `SurfaceView`.
 - Receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
-- Keeps the UI intentionally blank and full-screen so the device behaves like a dedicated receiver.
+- Keeps the UI intentionally minimal: a startup status line is shown while waiting, then the app behaves like a dedicated receiver.
 
 ## Target Device
 
-Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder keeps the mirrored H.264 stream at 1280x720 and lets Android scale it onto the fullscreen surface without distortion.
+Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder keeps the mirrored H.264 stream at 1280x720 and renders it into a centered 16:9 surface without distortion.
 
 It may run on other Android devices, but that is not the design target.
 
@@ -23,7 +23,7 @@ It may run on other Android devices, but that is not the design target.
 
 The project is a Kotlin Android application with a native C/C++ streaming stack. Release APKs are built by GitHub Actions.
 
-The workflow in `.github/workflows/android.yml` installs the expected Android toolchain, builds the release APK on every push, pull request, or manual run, and uploads `Receiver-release.apk` as a downloadable workflow artifact.
+The workflow in `.github/workflows/android.yml` installs the expected Android toolchain, builds the release APK on every push, pull request, or manual run, and uploads `Receiver-release.apk` as a downloadable workflow artifact. Tag pushes also create a GitHub Release and attach the APK as a release asset.
 
 The local Gradle wrapper is kept only so Actions can run a reproducible build from the repository. Actions uses Gradle's setup action for caching, but the wrapper still defines the Gradle version.
 

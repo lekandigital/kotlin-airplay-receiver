@@ -3,8 +3,11 @@ package io.carmo.airplay.receiver
 import android.app.Activity
 import android.os.Bundle
 import android.util.Log
+import android.view.Gravity
 import android.view.SurfaceView
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
@@ -12,6 +15,7 @@ class MainActivity : Activity() {
     private lateinit var airPlayServer: AirPlayServer
     private lateinit var raopServer: RaopServer
     private lateinit var dnsNotify: DNSNotify
+    private lateinit var statusView: TextView
     private var isStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -20,9 +24,13 @@ class MainActivity : Activity() {
         keepPlaybackSurfaceFullScreen()
 
         val surfaceView = findViewById<SurfaceView>(R.id.surface)
+        statusView = findViewById(R.id.status)
+        keepSurfaceProportional(surfaceView)
+
         airPlayServer = AirPlayServer()
-        raopServer = RaopServer(surfaceView)
+        raopServer = RaopServer(surfaceView, ::hideStatus)
         dnsNotify = DNSNotify(this)
+        showWaitingStatus()
 
         if (DEBUG_CODECS) {
             logSupportedCodecs()
@@ -45,6 +53,49 @@ class MainActivity : Activity() {
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             )
+    }
+
+    private fun keepSurfaceProportional(surfaceView: SurfaceView) {
+        surfaceView.holder.setFixedSize(STREAM_WIDTH, STREAM_HEIGHT)
+
+        fun updateSurfaceLayout() {
+            val parent = surfaceView.parent as? View ?: return
+            val parentWidth = parent.width
+            val parentHeight = parent.height
+            if (parentWidth == 0 || parentHeight == 0) {
+                return
+            }
+
+            var width = parentWidth
+            var height = width * STREAM_HEIGHT / STREAM_WIDTH
+            if (height > parentHeight) {
+                height = parentHeight
+                width = height * STREAM_WIDTH / STREAM_HEIGHT
+            }
+
+            val currentParams = surfaceView.layoutParams
+            if (currentParams.width != width || currentParams.height != height) {
+                surfaceView.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
+            }
+        }
+
+        surfaceView.post {
+            val parent = surfaceView.parent as? View ?: return@post
+            parent.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateSurfaceLayout() }
+            updateSurfaceLayout()
+        }
+    }
+
+    private fun showWaitingStatus() {
+        statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting for connection"
+        statusView.visibility = View.VISIBLE
+        statusView.bringToFront()
+    }
+
+    private fun hideStatus() {
+        runOnUiThread {
+            statusView.visibility = View.GONE
+        }
     }
 
     private fun logSupportedCodecs() {
@@ -95,5 +146,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "Receiver"
         private const val DEBUG_CODECS = false
+        private const val STREAM_WIDTH = 1280
+        private const val STREAM_HEIGHT = 720
     }
 }

@@ -6,7 +6,7 @@ Receiver targets the Lenovo ThinkSmart View running Android 8.1/API 27 on an 8-i
 
 Android 8.1 is old enough that the app avoids newer platform APIs and keeps `minSdk` at 27. The media path uses APIs available on the ThinkSmart View:
 
-- `SurfaceView` for direct fullscreen rendering
+- `SurfaceView` for direct proportional rendering
 - `MediaCodec` for H.264 decode
 - `AudioTrack.Builder` and low-latency performance mode for PCM output
 - JNI for the native RAOP, mirroring, AAC, crypto, and DNS-SD stack
@@ -15,7 +15,7 @@ The UI layer is intentionally static after launch. There are no animations, time
 
 ## Display And Decode
 
-The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver configures the decoder for 1280x720 and renders to a fullscreen 1280x800 surface. Android handles the final surface composition for the panel.
+The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver configures the decoder for 1280x720 and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
 
 This keeps the decoder format aligned with the stream instead of pretending the incoming video is 1280x800. It also avoids CPU-side scaling in Kotlin.
 
@@ -25,9 +25,10 @@ The hot path is:
 
 1. Native socket and protocol handling receives encrypted audio/video data.
 2. Native code decrypts and normalizes packets.
-3. JNI copies packet payloads into Kotlin callbacks.
-4. Kotlin queues the packet on the relevant playback thread.
-5. `VideoPlayer` feeds `MediaCodec`; `AudioPlayer` writes to `AudioTrack`.
+3. JNI copies packet payloads into native-owned direct buffers and passes `ByteBuffer` views into Kotlin.
+4. Kotlin queues the direct buffer wrapper on the relevant playback thread.
+5. `VideoPlayer` copies video into `MediaCodec` input buffers; `AudioPlayer` writes direct PCM buffers to `AudioTrack`.
+6. The playback thread frees the native buffer as soon as the packet is written, decoded, or dropped.
 
 The Kotlin side does not parse protocol state in the hot path. It only receives decoded packet boundaries and hands them to Android playback primitives.
 
@@ -35,8 +36,8 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a bounded `LinkedBlockingDeque`; when full, the oldest frame is dropped.
-- Audio uses a bounded `LinkedBlockingQueue`; when full, the oldest PCM packet is dropped.
+- Video uses a small fixed-size `ArrayBlockingQueue` capped at 6 frames; when full, the oldest frame is dropped.
+- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 24 PCM packets; when full, the oldest PCM packet is dropped.
 - Decode and playback threads poll with short timeouts so shutdown is responsive.
 - Frame-level logging is behind `DEBUG_FRAMES = false`.
 
@@ -44,9 +45,9 @@ These choices are deliberate for an appliance receiver. If the device cannot kee
 
 ## Native Boundary
 
-JNI still requires copying audio and video payloads into JVM arrays. That is the main remaining cost at the Kotlin/native boundary. The bridge now caches callback method IDs at server startup and keeps native packet processing outside the Activity.
+JNI still requires copying payloads because the native RAOP/mirroring buffers are not owned by the Android playback queues after the callback returns. The bridge now copies into native-owned direct buffers instead of JVM arrays, which reduces Java heap churn and lets audio write through `AudioTrack.write(ByteBuffer, ...)`.
 
-Further optimization would require a deeper native media path, such as feeding decoder input from native-owned direct buffers. That would be a larger change and should only be done after profiling on the actual ThinkSmart View.
+Video still needs one copy into `MediaCodec` input buffers. Removing that would require a deeper native media path or a decoder integration that owns input buffers directly. That should only be done after profiling on the actual ThinkSmart View.
 
 ## Operational Guidance
 

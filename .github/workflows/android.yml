@@ -5,8 +5,13 @@ on:
     branches:
       - main
       - master
+    tags:
+      - '*'
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -54,3 +59,11 @@ jobs:
           name: Receiver-release-apk
           path: dist/Receiver-release.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Receiver ${{ github.ref_name }}
+          files: dist/Receiver-release.apk
+          generate_release_notes: true

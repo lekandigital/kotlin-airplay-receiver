@@ -7,20 +7,23 @@ import android.os.Build
 import android.util.Log
 import android.view.Surface
 import io.carmo.airplay.receiver.model.NALPacket
-import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
-    private val packets = LinkedBlockingDeque<NALPacket>(MAX_BUFFERED_FRAMES)
+    private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
     @Volatile private var isStopped = false
 
     fun addPacket(packet: NALPacket) {
-        if (!packets.offerLast(packet)) {
-            packets.pollFirst()
-            packets.offerLast(packet)
+        if (!packets.offer(packet)) {
+            packets.poll()?.release()
+            if (!packets.offer(packet)) {
+                packet.release()
+                return
+            }
             if (DEBUG_FRAMES) {
                 Log.d(TAG, "video queue full; dropped oldest frame")
             }
@@ -44,7 +47,7 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     fun stopDecode() {
         isStopped = true
         interrupt()
-        packets.clear()
+        drainPackets()
     }
 
     private fun initDecoder() {
@@ -70,23 +73,29 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     }
 
     private fun decode(packet: NALPacket) {
-        val codec = decoder ?: return
+        val codec = decoder
+        if (codec == null) {
+            packet.release()
+            return
+        }
 
         try {
             val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-                if (inputBuffer == null || packet.nalData.size > inputBuffer.capacity()) {
+                if (inputBuffer == null || packet.size > inputBuffer.capacity()) {
                     if (DEBUG_FRAMES) {
-                        Log.d(TAG, "dropping oversized NAL: ${packet.nalData.size}")
+                        Log.d(TAG, "dropping oversized NAL: ${packet.size}")
                     }
                     codec.queueInputBuffer(inputBufferIndex, 0, 0, packet.pts, 0)
                     return
                 }
 
                 inputBuffer.clear()
-                inputBuffer.put(packet.nalData)
-                codec.queueInputBuffer(inputBufferIndex, 0, packet.nalData.size, packet.pts, 0)
+                packet.data.position(0)
+                packet.data.limit(packet.size)
+                inputBuffer.put(packet.data)
+                codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.pts, 0)
             } else if (DEBUG_FRAMES) {
                 Log.d(TAG, "dequeueInputBuffer failed")
             }
@@ -102,6 +111,14 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
             } while (outputBufferIndex >= 0)
         } catch (e: Exception) {
             e.printStackTrace()
+        } finally {
+            packet.release()
+        }
+    }
+
+    private fun drainPackets() {
+        while (true) {
+            packets.poll()?.release() ?: break
         }
     }
 
@@ -121,7 +138,7 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 30
+        private const val MAX_BUFFERED_FRAMES = 6
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720

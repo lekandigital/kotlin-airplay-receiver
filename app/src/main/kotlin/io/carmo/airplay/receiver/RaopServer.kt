@@ -7,31 +7,50 @@ import io.carmo.airplay.receiver.model.NALPacket
 import io.carmo.airplay.receiver.model.PCMPacket
 import io.carmo.airplay.receiver.player.AudioPlayer
 import io.carmo.airplay.receiver.player.VideoPlayer
+import java.nio.ByteBuffer
 
-class RaopServer(private val surfaceView: SurfaceView) : SurfaceHolder.Callback {
+class RaopServer(
+    private val surfaceView: SurfaceView,
+    private val onConnectionStarted: () -> Unit
+) : SurfaceHolder.Callback {
 
     private var videoPlayer: VideoPlayer? = null
     private var audioPlayer: AudioPlayer? = AudioPlayer().also { it.start() }
     private var serverId: Long = 0
+    @Volatile private var hasConnection = false
 
     init {
         surfaceView.holder.addCallback(this)
     }
 
     @Suppress("unused")
-    fun onRecvVideoData(nal: ByteArray, nalType: Int, dts: Long, pts: Long) {
+    fun onRecvVideoData(buffer: ByteBuffer, size: Int, nativePointer: Long, nalType: Int, dts: Long, pts: Long) {
         if (DEBUG_FRAMES) {
-            Log.d(TAG, "onRecvVideoData dts = $dts, pts = $pts, nalType = $nalType, nal length = ${nal.size}")
+            Log.d(TAG, "onRecvVideoData dts = $dts, pts = $pts, nalType = $nalType, nal length = $size")
         }
-        videoPlayer?.addPacket(NALPacket(nalData = nal, nalType = nalType, pts = pts, dts = dts))
+        markConnected()
+        val packet = NALPacket(data = buffer, size = size, nativePointer = nativePointer, nalType = nalType, pts = pts, dts = dts)
+        val player = videoPlayer
+        if (player == null) {
+            packet.release()
+            return
+        }
+        player.addPacket(packet)
     }
 
     @Suppress("unused")
-    fun onRecvAudioData(pcm: ShortArray, pts: Long) {
+    fun onRecvAudioData(buffer: ByteBuffer, size: Int, nativePointer: Long, pts: Long) {
         if (DEBUG_FRAMES) {
-            Log.d(TAG, "onRecvAudioData pcm length = ${pcm.size}, pts = $pts")
+            Log.d(TAG, "onRecvAudioData pcm bytes = $size, pts = $pts")
         }
-        audioPlayer?.addPacket(PCMPacket(data = pcm, pts = pts))
+        markConnected()
+        val packet = PCMPacket(data = buffer, size = size, nativePointer = nativePointer, pts = pts)
+        val player = audioPlayer
+        if (player == null) {
+            packet.release()
+            return
+        }
+        player.addPacket(packet)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) = Unit
@@ -65,6 +84,7 @@ class RaopServer(private val surfaceView: SurfaceView) : SurfaceHolder.Callback 
         videoPlayer = null
         audioPlayer?.stopPlay()
         audioPlayer = null
+        hasConnection = false
     }
 
     val port: Int
@@ -73,6 +93,13 @@ class RaopServer(private val surfaceView: SurfaceView) : SurfaceHolder.Callback 
     private external fun start(): Long
     private external fun stop(serverId: Long)
     private external fun getPort(serverId: Long): Int
+
+    private fun markConnected() {
+        if (!hasConnection) {
+            hasConnection = true
+            onConnectionStarted()
+        }
+    }
 
     companion object {
         private const val TAG = "Receiver-RAOP"

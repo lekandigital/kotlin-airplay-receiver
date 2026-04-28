@@ -34,7 +34,7 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates a full-screen `SurfaceView`, hides the system bars, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The view fills the ThinkSmart View's 1280x800 panel; the video decoder keeps the AirPlay H.264 stream dimensions separate and renders through Android's surface pipeline.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name until the first media packet arrives.
 
 `DNSNotify` handles local network service registration. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements.
 
@@ -42,16 +42,16 @@ The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
-- `onRecvVideoData(ByteArray, Int, Long, Long)`
-- `onRecvAudioData(ShortArray, Long)`
+- `onRecvVideoData(ByteBuffer, Int, Long, Int, Long, Long)`
+- `onRecvAudioData(ByteBuffer, Int, Long, Long)`
 
 It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only once a valid rendering surface exists.
 
 ## Media Playback Layer
 
-`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses bounded queues so stale frames are dropped instead of allowing latency to grow without limit. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the fullscreen 1280x800 `SurfaceView`, using Android's compositor to fit the stream to the display.
+`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a small fixed-size queue capped at 6 frames so stale frames are dropped instead of allowing latency to grow without limit. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
 
-`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and requests low-latency playback mode where the platform supports it. PCM packets are bounded in a queue for the same reason as video: when the receiver falls behind, bounded latency is better than endless buffering.
+`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1, requests low-latency playback mode where the platform supports it, and writes PCM from direct `ByteBuffer` packets. PCM packets are capped at 24 queued packets for the same reason as video: when the receiver falls behind, bounded latency is better than endless buffering.
 
 Both playback threads are deliberately small. They do not own Android UI objects other than the render surface, do not perform per-frame logging in normal builds, and do not retain unbounded packet history.
 
@@ -74,7 +74,7 @@ The app links three important native outputs:
 - `play-lib`, the AirPlay/RAOP implementation
 - `jdns_sd`, the DNS-SD JNI bridge
 
-The JNI bridge caches callback method IDs once at server startup and reuses thread attachments, avoiding repeated lookup and attach/detach overhead on every audio or video packet.
+The JNI bridge caches callback method IDs once at server startup and reuses thread attachments, avoiding repeated lookup and attach/detach overhead on every audio or video packet. Media callbacks use native-owned direct buffers instead of Java heap arrays; playback releases those buffers after write, decode, or drop.
 
 ## Discovery Flow
 
@@ -87,17 +87,17 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 
 1. The native mirror socket receives encrypted H.264 payloads.
 2. The native mirror buffer decrypts and normalizes NAL payloads.
-3. JNI copies frame bytes into Kotlin and invokes `RaopServer.onRecvVideoData`.
+3. JNI copies frame bytes into a native-owned direct buffer and invokes `RaopServer.onRecvVideoData`.
 4. `RaopServer` enqueues an `NALPacket` into `VideoPlayer`.
-5. `VideoPlayer` feeds `MediaCodec` input buffers and releases output buffers to the display surface.
+5. `VideoPlayer` feeds `MediaCodec` input buffers, releases output buffers to the display surface, and frees the native packet buffer.
 
 ## Audio Flow
 
 1. The native RTP socket receives encrypted audio packets.
 2. The native RAOP buffer decrypts and decodes AAC to PCM.
-3. JNI copies PCM samples into Kotlin and invokes `RaopServer.onRecvAudioData`.
+3. JNI copies PCM samples into a native-owned direct buffer and invokes `RaopServer.onRecvAudioData`.
 4. `RaopServer` enqueues a `PCMPacket` into `AudioPlayer`.
-5. `AudioPlayer` writes PCM samples into `AudioTrack`.
+5. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer and frees the native packet buffer.
 
 ## Build And CI
 
@@ -112,6 +112,7 @@ GitHub Actions runs the release build:
 5. Run `./gradlew --no-daemon assembleRelease`.
 6. Copy the generated APK to `dist/Receiver-release.apk`.
 7. Upload the release APK as a workflow artifact.
+8. On tag pushes, publish a GitHub Release and attach `Receiver-release.apk`.
 
 The release build type currently uses Android's debug signing configuration so CI can produce an installable APK without storing signing secrets in the repository. For public distribution, replace that with a proper release signing configuration backed by GitHub Actions secrets.
 
