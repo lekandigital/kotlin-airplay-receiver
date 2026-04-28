@@ -1,0 +1,90 @@
+package io.carmo.airplay.receiver.player
+
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioTrack
+import android.os.Build
+import io.carmo.airplay.receiver.model.PCMPacket
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+
+class AudioPlayer : Thread("ReceiverAudioPlayer") {
+
+    private val packets = LinkedBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
+    private var track: AudioTrack? = createAudioTrack().also { it.play() }
+    @Volatile private var isStopped = false
+
+    fun addPacket(packet: PCMPacket) {
+        if (!packets.offer(packet)) {
+            packets.poll()
+            packets.offer(packet)
+        }
+    }
+
+    override fun run() {
+        while (!isStopped) {
+            try {
+                packets.poll(250, TimeUnit.MILLISECONDS)?.let(::play)
+            } catch (e: InterruptedException) {
+                if (isStopped) {
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopPlay() {
+        isStopped = true
+        interrupt()
+        packets.clear()
+        track?.run {
+            flush()
+            stop()
+            release()
+        }
+        track = null
+    }
+
+    private fun play(packet: PCMPacket) {
+        track?.write(packet.data, 0, packet.data.size)
+    }
+
+    private fun createAudioTrack(): AudioTrack {
+        var minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNELS, AUDIO_FORMAT)
+        if (minBufferSize <= 0) {
+            minBufferSize = SAMPLE_RATE / 10 * 2 * 2
+        }
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(SAMPLE_RATE)
+                        .setChannelMask(CHANNELS)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            AudioTrack(AudioManager.STREAM_MUSIC, SAMPLE_RATE, CHANNELS, AUDIO_FORMAT, minBufferSize, AudioTrack.MODE_STREAM)
+        }
+    }
+
+    companion object {
+        private const val MAX_BUFFERED_PACKETS = 96
+        private const val SAMPLE_RATE = 44100
+        private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
+        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+    }
+}
