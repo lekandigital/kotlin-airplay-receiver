@@ -244,8 +244,6 @@ raop_handler_options(raop_conn_t *conn,
 	http_response_add_header(response, "Public", "SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER");
 }
 
-static int setup = 0;
-
 static void
 raop_handler_setup(raop_conn_t *conn,
                    http_request_t *request, http_response_t *response,
@@ -288,11 +286,16 @@ raop_handler_setup(raop_conn_t *conn,
     // Parsing bplist
     plist_t root_node = NULL;
     plist_from_bin(data, datalen, &root_node);
+    if (!root_node) {
+        logger_log(conn->raop->logger, LOGGER_ERR, "Invalid SETUP plist");
+        http_response_set_disconnect(response, 1);
+        return;
+    }
     plist_t streams_note = plist_dict_get_item(root_node, "streams");
-    if (setup == 0) {
+    if (conn->setup == 0) {
 		unsigned char aesiv[16];
 		unsigned char aeskey[16];
-        setup++;
+        conn->setup++;
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 1");
         // First setup
         plist_t eiv_note = plist_dict_get_item(root_node, "eiv");
@@ -314,13 +317,15 @@ raop_handler_setup(raop_conn_t *conn,
         // ekey is 72 bytes
         int ret = fairplay_decrypt(conn->fairplay, ekey, aeskey);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "fairplay_decrypt ret = %d", ret);
+        free(eiv);
+        free(ekey);
 		unsigned char ecdh_secret[32];
         pairing_get_ecdh_secret_key(conn->pairing, ecdh_secret);
         conn->raop_rtp = raop_rtp_init(conn->raop->logger, &conn->raop->callbacks, conn->remote, conn->remotelen, aeskey, aesiv, ecdh_secret, timing_rport);
 		conn->raop_rtp_mirror = raop_rtp_mirror_init(conn->raop->logger, &conn->raop->callbacks, conn->remote, conn->remotelen, aeskey, ecdh_secret, timing_rport);
-    } else if (setup == 1) {
+    } else if (conn->setup == 1) {
 		unsigned short tport=0, dport=0;
-        setup++;
+        conn->setup++;
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 2");
 		plist_t stream_note = plist_array_get_item(streams_note, 0);
 		plist_t type_note = plist_dict_get_item(stream_note, "type");
@@ -357,11 +362,13 @@ raop_handler_setup(raop_conn_t *conn,
         uint32_t len = 0;
         char* rsp = NULL;
         plist_to_bin(r_node, &rsp, &len);
+        plist_free(r_node);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 2 len = %d", len);
         http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
-        *response_data = malloc(len);
-        memcpy(*response_data, rsp, len);
-        *response_datalen = len;
+        if (rsp) {
+            *response_data = rsp;
+            *response_datalen = len;
+        }
         logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d", dport, tport);
     } else {
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 3");
@@ -375,6 +382,7 @@ raop_handler_setup(raop_conn_t *conn,
                 http_response_add_header(response, "CSeq", cseq);
             }
             http_response_add_header(response, "Server", "AirTunes/220.68");
+            plist_free(root_node);
             return;
         }
 
@@ -421,15 +429,18 @@ raop_handler_setup(raop_conn_t *conn,
 		uint32_t len = 0;
 		char* rsp = NULL;
 		plist_to_bin(r_node, &rsp, &len);
+		plist_free(r_node);
 		logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 3 len = %d", len);
 		http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
-		*response_data = malloc(len);
-		memcpy(*response_data, rsp, len);
-		*response_datalen = len;
+		if (rsp) {
+			*response_data = rsp;
+			*response_datalen = len;
+		}
 
 		logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d, cport = %d", dport, tport, cport);
     }
 
+    plist_free(root_node);
 }
 
 static void

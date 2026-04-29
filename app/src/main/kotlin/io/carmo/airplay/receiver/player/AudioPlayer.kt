@@ -59,11 +59,20 @@ class AudioPlayer(
         interrupt()
         drainPackets()
         track?.run {
-            flush()
-            if (playState == AudioTrack.PLAYSTATE_PLAYING) {
-                stop()
+            try {
+                if (playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    stop()
+                }
+            } catch (_: Exception) {
             }
-            release()
+            try {
+                flush()
+            } catch (_: Exception) {
+            }
+            try {
+                release()
+            } catch (_: Exception) {
+            }
         }
         track = null
     }

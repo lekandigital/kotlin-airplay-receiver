@@ -58,6 +58,7 @@ struct raop_conn_s {
 	unsigned char *remote;
 	int remotelen;
 
+	int setup;
 	int stream_stopped_notified;
 };
 typedef struct raop_conn_s raop_conn_t;
