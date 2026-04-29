@@ -30,6 +30,7 @@ class MainActivity : Activity() {
     private lateinit var dnsNotify: DNSNotify
     private lateinit var playbackSurface: SurfaceView
     private lateinit var startupPanel: View
+    private lateinit var startupVersionLabel: TextView
     private lateinit var statusView: TextView
     private lateinit var videoModeGroup: RadioGroup
     private lateinit var wakeModeGroup: RadioGroup
@@ -65,6 +66,7 @@ class MainActivity : Activity() {
 
         playbackSurface = findViewById(R.id.surface)
         startupPanel = findViewById(R.id.startup_panel)
+        startupVersionLabel = findViewById(R.id.startup_version_label)
         statusView = findViewById(R.id.status)
         videoModeGroup = findViewById(R.id.video_mode_group)
         wakeModeGroup = findViewById(R.id.wake_mode_group)
@@ -120,6 +122,17 @@ class MainActivity : Activity() {
         if (isStarted) {
             applyWakeMode()
         }
+        if (::startupPanel.isInitialized && !isStreaming) {
+            showWaitingStatus()
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::startupPanel.isInitialized && !isStreaming) {
+            configurePlaybackWindow()
+            showWaitingStatus()
+        }
     }
 
     override fun onDestroy() {
@@ -160,6 +173,7 @@ class MainActivity : Activity() {
     private fun configureControlLayer() {
         val elevation = CONTROL_OVERLAY_ELEVATION_DP * resources.displayMetrics.density
         startupPanel.elevation = elevation
+        startupVersionLabel.elevation = elevation
         audioVolumeOverlay.elevation = elevation
         trafficMonitor.elevation = elevation
     }
@@ -288,9 +302,12 @@ class MainActivity : Activity() {
 
     private fun showWaitingStatus() {
         isStreaming = false
-        statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
+        startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
+        startupVersionLabel.visibility = View.VISIBLE
+        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
         startupPanel.visibility = View.VISIBLE
         audioVolumeOverlay.visibility = View.GONE
+        showControl(startupVersionLabel)
         showControl(startupPanel)
     }
 
@@ -298,6 +315,7 @@ class MainActivity : Activity() {
         runOnUiThread {
             isStreaming = true
             startupPanel.visibility = View.GONE
+            startupVersionLabel.visibility = View.GONE
         }
     }
 

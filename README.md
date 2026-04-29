@@ -15,7 +15,7 @@ The application starts listening as soon as it is launched. The startup pane exp
 
 ## Runtime Controls
 
-Receiver starts listening immediately, but the waiting screen exposes stream resolution, display behavior, and audio choices before a sender connects.
+Receiver starts listening immediately, but the waiting screen exposes stream resolution, display behavior, and audio choices before a sender connects. A small corner label shows the app version so installed builds are easy to confirm on-device.
 
 Stream resolution controls what Receiver advertises in the AirPlay `/info` response:
 

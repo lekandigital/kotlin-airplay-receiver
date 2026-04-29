@@ -35,7 +35,7 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the selected stream's 16:9 aspect ratio so mirroring is not vertically stretched. It also shows a centered startup pane with the advertised device name, stream resolution, display wake policy, and audio controls until the first media packet arrives.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the selected stream's 16:9 aspect ratio so mirroring is not vertically stretched. It also shows a centered startup pane with the advertised device name, stream resolution, display wake policy, and audio controls until the first media packet arrives. A small corner label shows the installed app version on the waiting screen.
 
 The stream resolution mode is stored in local preferences:
 
