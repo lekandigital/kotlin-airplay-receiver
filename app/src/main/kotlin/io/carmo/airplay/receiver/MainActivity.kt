@@ -28,8 +28,10 @@ class MainActivity : Activity() {
     private lateinit var airPlayServer: AirPlayServer
     private lateinit var raopServer: RaopServer
     private lateinit var dnsNotify: DNSNotify
+    private lateinit var playbackSurface: SurfaceView
     private lateinit var startupPanel: View
     private lateinit var statusView: TextView
+    private lateinit var videoModeGroup: RadioGroup
     private lateinit var wakeModeGroup: RadioGroup
     private lateinit var acceptAudioCheckbox: CheckBox
     private lateinit var audioVolumeLabel: TextView
@@ -41,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var audioManager: AudioManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
+    private var videoMode = VideoMode.HD
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
     private var acceptAudio = true
     private var audioVolume = DEFAULT_AUDIO_VOLUME
@@ -60,9 +63,10 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         configurePlaybackWindow()
 
-        val surfaceView = findViewById<SurfaceView>(R.id.surface)
+        playbackSurface = findViewById(R.id.surface)
         startupPanel = findViewById(R.id.startup_panel)
         statusView = findViewById(R.id.status)
+        videoModeGroup = findViewById(R.id.video_mode_group)
         wakeModeGroup = findViewById(R.id.wake_mode_group)
         acceptAudioCheckbox = findViewById(R.id.accept_audio)
         audioVolumeLabel = findViewById(R.id.audio_volume_label)
@@ -73,25 +77,29 @@ class MainActivity : Activity() {
         trafficMonitor = findViewById(R.id.traffic_monitor)
         trafficMonitor.setOnClickListener { trafficMonitor.visibility = View.GONE }
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        configurePlaybackSurface(surfaceView)
+        configurePlaybackSurface(playbackSurface)
         configureControlLayer()
-        keepSurfaceProportional(surfaceView)
 
+        videoMode = loadVideoMode()
         acceptAudio = loadAcceptAudio()
         audioVolume = loadAudioVolume()
         airPlayServer = AirPlayServer()
         raopServer = RaopServer(
-            surfaceView,
+            playbackSurface,
             ::hideStatus,
             ::handleVideoActivity,
             ::handleTrafficSample,
             ::handleLatencySample,
             ::handleStreamStopped,
+            videoMode.width,
+            videoMode.height,
             acceptAudio,
-            MAX_AUDIO_VOLUME
+            audioVolume
         )
         dnsNotify = DNSNotify(this)
         wakeMode = loadWakeMode()
+        keepSurfaceProportional(playbackSurface)
+        configureVideoModeControl()
         configureWakeModeControl()
         configureAudioControls()
         showWaitingStatus()
@@ -245,27 +253,8 @@ class MainActivity : Activity() {
     }
 
     private fun keepSurfaceProportional(surfaceView: SurfaceView) {
-        surfaceView.holder.setFixedSize(STREAM_WIDTH, STREAM_HEIGHT)
-
         fun updateSurfaceLayout() {
-            val parent = surfaceView.parent as? View ?: return
-            val parentWidth = parent.width
-            val parentHeight = parent.height
-            if (parentWidth == 0 || parentHeight == 0) {
-                return
-            }
-
-            var width = parentWidth
-            var height = width * STREAM_HEIGHT / STREAM_WIDTH
-            if (height > parentHeight) {
-                height = parentHeight
-                width = height * STREAM_WIDTH / STREAM_HEIGHT
-            }
-
-            val currentParams = surfaceView.layoutParams
-            if (currentParams.width != width || currentParams.height != height) {
-                surfaceView.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
-            }
+            updateSurfaceLayout(surfaceView)
         }
 
         surfaceView.post {
@@ -275,9 +264,31 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateSurfaceLayout(surfaceView: SurfaceView) {
+        surfaceView.holder.setFixedSize(videoMode.width, videoMode.height)
+        val parent = surfaceView.parent as? View ?: return
+        val parentWidth = parent.width
+        val parentHeight = parent.height
+        if (parentWidth == 0 || parentHeight == 0) {
+            return
+        }
+
+        var width = parentWidth
+        var height = width * videoMode.height / videoMode.width
+        if (height > parentHeight) {
+            height = parentHeight
+            width = height * videoMode.width / videoMode.height
+        }
+
+        val currentParams = surfaceView.layoutParams
+        if (currentParams.width != width || currentParams.height != height) {
+            surfaceView.layoutParams = FrameLayout.LayoutParams(width, height, Gravity.CENTER)
+        }
+    }
+
     private fun showWaitingStatus() {
         isStreaming = false
-        statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting for connection"
+        statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
         startupPanel.visibility = View.VISIBLE
         audioVolumeOverlay.visibility = View.GONE
         showControl(startupPanel)
@@ -287,6 +298,23 @@ class MainActivity : Activity() {
         runOnUiThread {
             isStreaming = true
             startupPanel.visibility = View.GONE
+        }
+    }
+
+    private fun configureVideoModeControl() {
+        videoModeGroup.check(videoMode.radioButtonId)
+        videoModeGroup.setOnCheckedChangeListener { _, checkedId ->
+            val selectedMode = VideoMode.fromRadioButtonId(checkedId) ?: return@setOnCheckedChangeListener
+            if (selectedMode == videoMode) {
+                return@setOnCheckedChangeListener
+            }
+            videoMode = selectedMode
+            saveVideoMode(selectedMode)
+            raopServer.setVideoMode(selectedMode.width, selectedMode.height)
+            updateSurfaceLayout(playbackSurface)
+            if (!isStreaming) {
+                showWaitingStatus()
+            }
         }
     }
 
@@ -324,6 +352,19 @@ class MainActivity : Activity() {
         val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         return WakeMode.fromPreferenceValue(preferences.getString(PREFERENCE_WAKE_MODE, null))
             ?: WakeMode.WAKE_ON_ACTIVITY
+    }
+
+    private fun loadVideoMode(): VideoMode {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        return VideoMode.fromPreferenceValue(preferences.getString(PREFERENCE_VIDEO_MODE, null))
+            ?: VideoMode.HD
+    }
+
+    private fun saveVideoMode(mode: VideoMode) {
+        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREFERENCE_VIDEO_MODE, mode.preferenceValue)
+            .apply()
     }
 
     private fun saveWakeMode(mode: WakeMode) {
@@ -598,6 +639,22 @@ class MainActivity : Activity() {
         }
     }
 
+    private enum class VideoMode(
+        val preferenceValue: String,
+        val radioButtonId: Int,
+        val label: String,
+        val width: Int,
+        val height: Int
+    ) {
+        HD("720p", R.id.video_mode_720p, "720p", 1280, 720),
+        FULL_HD("1080p", R.id.video_mode_1080p, "1080p", 1920, 1080);
+
+        companion object {
+            fun fromPreferenceValue(value: String?): VideoMode? = values().firstOrNull { it.preferenceValue == value }
+            fun fromRadioButtonId(id: Int): VideoMode? = values().firstOrNull { it.radioButtonId == id }
+        }
+    }
+
     companion object {
         private const val TAG = "Receiver"
         private const val WAKE_LOCK_TAG = "ReceiverActive"
@@ -615,10 +672,9 @@ class MainActivity : Activity() {
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val DEFAULT_AUDIO_VOLUME = 1.0f
         private const val PREFERENCES_NAME = "receiver"
+        private const val PREFERENCE_VIDEO_MODE = "video_mode"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
         private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
         private const val DEBUG_CODECS = false
-        private const val STREAM_WIDTH = 1280
-        private const val STREAM_HEIGHT = 720
     }
 }

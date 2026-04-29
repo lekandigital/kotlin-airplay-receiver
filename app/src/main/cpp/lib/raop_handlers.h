@@ -84,6 +84,23 @@ raop_handler_info(raop_conn_t *conn,
 	plist_t root_node = NULL;
 	plist_from_bin(info, len, &root_node);
 	if (root_node) {
+		int video_width = 1280;
+		int video_height = 720;
+		if (conn->raop->callbacks.video_width) {
+			video_width = conn->raop->callbacks.video_width(conn->raop->callbacks.cls);
+		}
+		if (conn->raop->callbacks.video_height) {
+			video_height = conn->raop->callbacks.video_height(conn->raop->callbacks.cls);
+		}
+		if (video_width <= 0) {
+			video_width = 1280;
+		}
+		if (video_height <= 0) {
+			video_height = 720;
+		}
+		plist_dict_set_item(root_node, "widthPixels", plist_new_uint(video_width));
+		plist_dict_set_item(root_node, "heightPixels", plist_new_uint(video_height));
+
 		if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
 			plist_dict_remove_item(root_node, "audioType");
 			plist_dict_remove_item(root_node, "audioFormats");

@@ -145,11 +145,11 @@ class AudioPlayer(
         private const val DEFAULT_VOLUME = 1.0f
         private const val MIN_VOLUME = 0.0f
         private const val MAX_VOLUME = 1.0f
-        private const val MAX_BUFFERED_PACKETS = 64
-        private const val MAX_QUEUED_PACKETS = 48
-        private const val PREBUFFER_PACKETS = 12
+        private const val MAX_BUFFERED_PACKETS = 32
+        private const val MAX_QUEUED_PACKETS = 24
+        private const val PREBUFFER_PACKETS = 8
         private const val PREBUFFER_WAIT_MS = 10L
-        private const val AUDIO_BUFFER_MULTIPLIER = 8
+        private const val AUDIO_BUFFER_MULTIPLIER = 4
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT

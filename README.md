@@ -4,24 +4,31 @@
 
 Receiver is a small Android AirPlay receiver tailored for the Lenovo ThinkSmart View. It was custom made for the device and the project background is described in [this Tao of Mac post](https://taoofmac.com/space/blog/2023/04/22/1330).
 
-The application starts listening as soon as it is launched. There is no in-app control interface: start it from the Android launcher and stop it through the system app switcher or device controls.
+The application starts listening as soon as it is launched. The startup pane exposes the few choices that need to be made before a sender connects; after that, the app behaves like a dedicated receiver.
 
 ## What It Does
 
 - Advertises itself on the local network as an AirPlay/RAOP target using the Android device name.
 - Receives H.264 screen mirroring and renders it to a centered proportional `SurfaceView`.
 - Optionally receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
-- Keeps the UI intentionally minimal: a startup status line and display wake policy picker are shown while waiting, then the app behaves like a dedicated receiver. A transparent traffic monitor can be pulled in from the top-right corner when needed.
+- Keeps the UI intentionally minimal: a centered startup pane is shown while waiting, then the app behaves like a dedicated receiver. A transparent traffic monitor can be pulled in from the top-right corner when needed.
 
 ## Runtime Controls
 
-Receiver starts listening immediately, but the waiting screen exposes one display policy choice before a sender connects:
+Receiver starts listening immediately, but the waiting screen exposes stream resolution, display behavior, and audio choices before a sender connects.
+
+Stream resolution controls what Receiver advertises in the AirPlay `/info` response:
+
+- `720p`: advertises and decodes a 1280x720 stream. This is the default for lowest latency on the ThinkSmart View.
+- `1080p`: advertises and decodes a 1920x1080 stream, then lets the Android surface scale it down to the device display.
+
+Display behavior controls what Receiver does while it is active:
 
 - `OS default`: lets Android manage dimming, sleep, and screensaver behavior.
 - `Always awake`: keeps the display on while Receiver is active.
 - `Wake on activity`: lets the display sleep, then wakes Receiver for major visual activity such as a new stream after idle or H.264 key/config frames.
 
-The selected display policy is remembered on the device.
+The selected stream resolution and display policy are remembered on the device.
 
 During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent media bandwidth with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
 
@@ -31,7 +38,7 @@ When the sender stops or disconnects from a mirrored stream, Receiver exits and 
 
 ## Target Device
 
-Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder keeps the mirrored H.264 stream at 1280x720 and renders it into a centered 16:9 surface without distortion.
+Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder defaults to 1280x720 and renders into a centered 16:9 surface without distortion. The optional 1080p mode advertises 1920x1080 for sources that benefit from it, then downscales through the display surface.
 
 It may run on other Android devices, but that is not the design target.
 

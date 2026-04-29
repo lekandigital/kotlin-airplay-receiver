@@ -18,6 +18,8 @@ class RaopServer(
     private val onTrafficSample: (Int) -> Unit,
     private val onLatencySample: (Long) -> Unit,
     private val onStreamStoppedCallback: () -> Unit,
+    initialVideoWidth: Int,
+    initialVideoHeight: Int,
     initialAcceptAudio: Boolean,
     initialAudioVolume: Float
 ) : SurfaceHolder.Callback {
@@ -26,6 +28,8 @@ class RaopServer(
     private var audioPlayer: AudioPlayer? = null
     private var serverId: Long = 0
     private var lastVideoActivityAtMs = 0L
+    @Volatile private var videoWidth = initialVideoWidth
+    @Volatile private var videoHeight = initialVideoHeight
     @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
@@ -92,7 +96,7 @@ class RaopServer(
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (videoPlayer == null) {
-            videoPlayer = VideoPlayer(holder.surface, onLatencySample).also { it.start() }
+            videoPlayer = VideoPlayer(holder.surface, videoWidth, videoHeight, onLatencySample).also { it.start() }
         }
     }
 
@@ -103,7 +107,7 @@ class RaopServer(
             ensureAudioPlayer()
         }
         if (videoPlayer == null && surfaceView.holder.surface.isValid) {
-            videoPlayer = VideoPlayer(surfaceView.holder.surface, onLatencySample).also { it.start() }
+            videoPlayer = VideoPlayer(surfaceView.holder.surface, videoWidth, videoHeight, onLatencySample).also { it.start() }
         }
         if (serverId == 0L) {
             serverId = start()
@@ -133,6 +137,26 @@ class RaopServer(
         }
     }
 
+    fun setVideoMode(width: Int, height: Int) {
+        videoWidth = width
+        videoHeight = height
+        if (hasConnection) {
+            return
+        }
+        videoPlayer?.let { player ->
+            player.stopDecode()
+            try {
+                player.join(VIDEO_RESTART_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        videoPlayer = null
+        if (surfaceView.holder.surface.isValid) {
+            videoPlayer = VideoPlayer(surfaceView.holder.surface, videoWidth, videoHeight, onLatencySample).also { it.start() }
+        }
+    }
+
     fun setAudioVolume(volume: Float) {
         audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
         audioPlayer?.setVolume(audioVolume)
@@ -140,6 +164,12 @@ class RaopServer(
 
     @Suppress("unused")
     fun isAudioAccepted(): Boolean = acceptAudio
+
+    @Suppress("unused")
+    fun getVideoWidth(): Int = videoWidth
+
+    @Suppress("unused")
+    fun getVideoHeight(): Int = videoHeight
 
     @Suppress("unused")
     fun onStreamStopped() {
@@ -212,6 +242,7 @@ class RaopServer(
         private const val DEBUG_FRAMES = false
         private const val MIN_AUDIO_VOLUME = 0.0f
         private const val MAX_AUDIO_VOLUME = 1.0f
+        private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val NAL_TYPE_MASK = 0x1F
         private const val NAL_TYPE_IDR = 5

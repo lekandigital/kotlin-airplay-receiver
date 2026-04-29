@@ -8,13 +8,13 @@ The final application is designed around four constraints:
 
 - It must run on Android 8.1/API 27.
 - It targets the Lenovo ThinkSmart View's 8-inch 1280x800 WVA touchscreen.
-- It must launch directly into receiver mode with no control UI.
+- It must launch directly into receiver mode with only pre-connection controls.
 - It must advertise itself using the name of the Android device it is running on.
 - It must keep the hot media path as lean as possible on ThinkSmart View hardware.
 
 ## Runtime Overview
 
-At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, starts a foreground keepalive service, shows the display policy picker, and starts both discovery and streaming services.
+At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, starts a foreground keepalive service, shows the centered startup pane, and starts both discovery and streaming services.
 
 ```mermaid
 flowchart LR
@@ -35,7 +35,12 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name and display wake policy until the first media packet arrives.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the selected stream's 16:9 aspect ratio so mirroring is not vertically stretched. It also shows a centered startup pane with the advertised device name, stream resolution, display wake policy, and audio controls until the first media packet arrives.
+
+The stream resolution mode is stored in local preferences:
+
+- `720p` advertises 1280x720 through the AirPlay `/info` response and configures the decoder for that stream size.
+- `1080p` advertises 1920x1080 through `/info`, configures the decoder for that stream size, and lets the display surface downscale to the ThinkSmart View panel.
 
 The display wake policy is stored in local preferences:
 
@@ -57,6 +62,8 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 - `onRecvVideoData(ByteBuffer, Int, Long, Int, Long, Long)`
 - `onRecvAudioData(ByteBuffer, Int, Long, Long)`
+- `getVideoWidth()`
+- `getVideoHeight()`
 
 It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only once a valid rendering surface exists.
 
@@ -68,9 +75,9 @@ When the native RAOP connection receives `TEARDOWN`, or a connection is destroye
 
 ## Media Playback Layer
 
-`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a tiny queue that preserves codec config while replacing pending video input with the newest frame, so stale frames are dropped instead of allowing latency to grow without limit. It also drains decoder output and renders only the newest waiting output frame. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
+`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a tiny queue that preserves codec config while replacing pending video input with the newest frame, so stale frames are dropped instead of allowing latency to grow without limit. It also drains decoder output and renders only the newest waiting output frame. On the ThinkSmart View target it defaults to H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream. The optional 1920x1080 mode uses the same decode path and relies on the display surface for downscaling.
 
-`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback now favors continuity over minimum latency: it prebuffers 12 packets before starting, uses a larger platform buffer and blocking writes, and caps PCM packets at 64 queued packets while trimming to 48 pending packets.
+`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback keeps a modest continuity cushion without letting audio dominate receiver latency: it prebuffers 8 packets before starting, uses a 4x platform buffer and blocking writes, and caps PCM packets at 32 queued packets while trimming to 24 pending packets.
 
 Both playback threads are deliberately small. They do not own Android UI objects other than the render surface, do not perform per-frame logging in normal builds, and do not retain unbounded packet history.
 
@@ -149,4 +156,4 @@ See `docs/performance.md` for the performance assumptions behind the Kotlin/nati
 
 ## Deliberate Omissions
 
-Receiver does not include an in-app start/stop button, device name editor, settings screen, or account system. The intended operating model is simple: launch it when the ThinkSmart View should act as a receiver, and stop it through Android system controls.
+Receiver does not include an in-app start/stop button, device name editor, settings screen, or account system. The intended operating model is simple: launch it when the ThinkSmart View should act as a receiver, choose pre-connection behavior on the centered startup pane, and stop it through Android system controls.

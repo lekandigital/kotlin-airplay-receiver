@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit
 
 class VideoPlayer(
     private val surface: Surface,
+    private val width: Int,
+    private val height: Int,
     private val onLatencySample: (Long) -> Unit = {}
 ) : Thread("ReceiverVideoPlayer") {
 
@@ -63,16 +65,16 @@ class VideoPlayer(
 
     private fun initDecoder() {
         try {
-            val videoFormat = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT)
+            val videoFormat = MediaFormat.createVideoFormat(MIME_TYPE, width, height)
             val codec = MediaCodec.createDecoderByType(MIME_TYPE)
             decoder = codec
 
             val decoderInfo = codec.codecInfo
-            Log.i(TAG, "decoder selected = ${decoderInfo.name}")
+            Log.i(TAG, "decoder selected = ${decoderInfo.name}, size = ${width}x${height}")
 
             if (decoderSupportsAdaptivePlayback(decoderInfo, MIME_TYPE)) {
-                videoFormat.setInteger(MediaFormat.KEY_MAX_WIDTH, VIDEO_WIDTH)
-                videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, VIDEO_HEIGHT)
+                videoFormat.setInteger(MediaFormat.KEY_MAX_WIDTH, width)
+                videoFormat.setInteger(MediaFormat.KEY_MAX_HEIGHT, height)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 videoFormat.setInteger(MediaFormat.KEY_PRIORITY, 0)
@@ -196,10 +198,7 @@ class VideoPlayer(
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
         private const val MAX_BUFFERED_FRAMES = 2
-        private const val MAX_QUEUED_FRAMES = 1
         private const val MIME_TYPE = "video/avc"
-        private const val VIDEO_WIDTH = 1280
-        private const val VIDEO_HEIGHT = 720
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val TIMEOUT_USEC = 1000L
 

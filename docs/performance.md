@@ -11,9 +11,14 @@ Android 8.1 is old enough that the app avoids newer platform APIs and keeps `min
 - `AudioTrack.Builder` and low-latency performance mode for PCM output
 - JNI for the native RAOP, mirroring, AAC, crypto, and DNS-SD stack
 
-The UI layer is intentionally static after launch. There are no animations, timers, progress bars, polling widgets, or settings controls competing with decode and audio playback.
+The UI layer is intentionally static after launch. The pre-connection controls sit on one centered pane and disappear when streaming begins. There are no animations, polling widgets, or settings controls competing with decode and audio playback during a stream.
 
-The app runs a small foreground service while active so Android treats Receiver as a foreground task. The startup screen exposes three display policies:
+The app runs a small foreground service while active so Android treats Receiver as a foreground task. The startup screen exposes two stream resolution modes:
+
+- `720p`: advertise 1280x720 and avoid extra decode/downscale work.
+- `1080p`: advertise 1920x1080 and downscale through the display surface.
+
+The startup screen also exposes three display policies:
 
 - `OS default`: no receiver wake lock or keep-screen-on window flag.
 - `Always awake`: sets `FLAG_KEEP_SCREEN_ON` and holds a screen wake lock while Receiver is active.
@@ -37,9 +42,9 @@ Receiver exits on stream teardown or disconnect. This avoids leaving the applian
 
 ## Display And Decode
 
-The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver configures the decoder for 1280x720 and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
+The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver defaults to 720p mode, configures the decoder for 1280x720, and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
 
-This keeps the decoder format aligned with the stream instead of pretending the incoming video is 1280x800. It also avoids CPU-side scaling in Kotlin.
+This keeps the decoder format aligned with the stream instead of pretending the incoming video is 1280x800. It also avoids CPU-side scaling in Kotlin. The optional 1080p mode advertises 1920x1080 through `/info`, configures `MediaCodec` for 1920x1080, and relies on `SurfaceView`/hardware composition to downscale. That mode may improve source-side quality, but it is expected to cost more decode bandwidth and should be tested against the latency chart on the actual device.
 
 ## Hot Path
 
@@ -62,11 +67,11 @@ Receiver prefers dropping stale media over building delay:
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.
-- Audio uses a fixed-size `ArrayBlockingQueue` capped at 64 PCM packets, prebuffers 12 packets before playback starts, and trims backlog to 48 pending packets before enqueueing.
+- Audio uses a fixed-size `ArrayBlockingQueue` capped at 32 PCM packets, prebuffers 8 packets before playback starts, and trims backlog to 24 pending packets before enqueueing.
 - The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.
 - Playback threads request Android's urgent display/audio thread priorities.
 - The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
-- Audio writes use blocking `AudioTrack` writes and a larger platform buffer to reduce choppiness on the ThinkSmart View, accepting a little more local latency.
+- Audio writes use blocking `AudioTrack` writes and a 4x platform buffer to reduce choppiness on the ThinkSmart View without letting optional audio build as much local latency as the earlier larger buffer.
 - Local volume control changes Android's media stream volume, so it follows the device's system audio path instead of only scaling the app's `AudioTrack`.
 - Decode and playback threads poll with short timeouts so shutdown is responsive.
 - Frame-level logging is behind `DEBUG_FRAMES = false`.
@@ -83,7 +88,7 @@ Video still needs one copy into `MediaCodec` input buffers. Removing that would 
 
 For best results on the target device:
 
-- Pick the display policy on the startup screen before connecting; the choice is remembered locally.
+- Pick the stream resolution and display policy on the startup screen before connecting; both choices are remembered locally.
 - Leave `Accept audio` checked to play audio; clear it before connecting to reject audio setup from the sender.
 - Swipe vertically from the right edge to adjust local audio volume when audio is accepted.
 - Drag in from the top-right corner to show the traffic monitor; tap the monitor to hide it.
