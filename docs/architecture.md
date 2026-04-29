@@ -43,7 +43,7 @@ The display wake policy is stored in local preferences:
 - `Always awake` keeps the window and display awake while Receiver is active.
 - `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
 
-Audio acceptance and local playback volume are also stored in local preferences. If `Accept audio` is off before connection, the native RAOP handler rejects the audio `SETUP` request instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately as a fallback. If audio is accepted, a right-edge vertical swipe adjusts `AudioTrack` volume and displays a transient blue vertical volume bar over the video.
+Audio acceptance is stored in local preferences, while volume follows Android's media stream volume. If `Accept audio` is off before connection, the RAOP DNS-SD TXT record omits audio format fields, `/info` strips audio format and latency keys, and the native RAOP handler still rejects audio `SETUP` as a fallback instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately. If audio is accepted and a stream is active, a right-edge vertical swipe adjusts Android media volume and displays a transient blue vertical volume bar over the video.
 
 `ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
 
@@ -70,7 +70,7 @@ When the native RAOP connection receives `TEARDOWN`, or a connection is destroye
 
 `VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a small fixed-size queue capped at 2 frames and trims pending input to the newest frame so stale frames are dropped instead of allowing latency to grow without limit. It also drains decoder output and renders only the newest waiting output frame. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
 
-`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1, requests low-latency playback mode where the platform supports it, and writes PCM from direct `ByteBuffer` packets. PCM packets are capped at 4 queued packets and trimmed to 3 pending packets for the same reason as video: when the receiver falls behind, bounded latency is better than endless buffering.
+`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback now favors continuity over minimum latency: it uses a larger platform buffer and blocking writes, with PCM packets capped at 16 queued packets and trimmed to 12 pending packets.
 
 Both playback threads are deliberately small. They do not own Android UI objects other than the render surface, do not perform per-frame logging in normal builds, and do not retain unbounded packet history.
 

@@ -36,21 +36,17 @@ class DNSNotify(context: Context) {
         airplayRegister = Register(txtRecord, deviceName, "_airplay._tcp", "local.", "", port)
     }
 
-    fun registerRaop(port: Int) {
-        Log.d(TAG, "registerRaop port = $port")
+    fun registerRaop(port: Int, acceptAudio: Boolean) {
+        Log.d(TAG, "registerRaop port = $port, acceptAudio = $acceptAudio")
+        raopRegister?.stop()
         val txtRecord = TXTRecord().apply {
-            set("ch", "2")
-            set("cn", "0,1,2,3")
-            set("da", "true")
+            set("da", acceptAudio.toString())
             set("et", "0,3,5")
             set("vv", "2")
             set("ft", "0x5A7FFFF7,0x1E")
             set("am", "AppleTV2,1")
-            set("md", "0,1,2")
             set("rhd", "5.6.0.0")
             set("pw", "false")
-            set("sr", "44100")
-            set("ss", "16")
             set("sv", "false")
             set("tp", "UDP")
             set("txtvers", "1")
@@ -58,6 +54,13 @@ class DNSNotify(context: Context) {
             set("vs", "220.68")
             set("vn", "65537")
             set("pk", "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7")
+            if (acceptAudio) {
+                set("ch", "2")
+                set("cn", "0,1,2,3")
+                set("md", "0,1,2")
+                set("sr", "44100")
+                set("ss", "16")
+            }
         }
         raopRegister = Register(txtRecord, "${macAddress.replace(":", "")}@$deviceName", "_raop._tcp", "local.", "", port)
     }

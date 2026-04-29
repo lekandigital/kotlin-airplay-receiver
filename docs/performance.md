@@ -31,7 +31,7 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling one-second buckets and avoids opaque backgrounds.
 
-Audio can be disabled before a sender connects. In that mode Receiver rejects the native audio `SETUP` request, which is preferable to accepting audio and discarding it later. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
+Audio can be disabled before a sender connects. In that mode Receiver advertises reduced RAOP audio capability through DNS-SD, strips audio format details from `/info`, and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
 Receiver exits on stream teardown or disconnect. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path.
 
@@ -62,12 +62,12 @@ Receiver prefers dropping stale media over building delay:
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.
-- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 4 PCM packets and trims backlog to 3 pending packets before enqueueing.
+- Audio uses a fixed-size `ArrayBlockingQueue` capped at 16 PCM packets and trims backlog to 12 pending packets before enqueueing.
 - The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.
 - Playback threads request Android's urgent display/audio thread priorities.
 - The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
-- Audio writes use non-blocking `AudioTrack` writes so full platform buffers do not grow receiver-side latency.
-- Local volume control uses `AudioTrack.setVolume` and does not ask the sender to change its stream volume.
+- Audio writes use blocking `AudioTrack` writes and a larger platform buffer to reduce choppiness on the ThinkSmart View, accepting a little more local latency.
+- Local volume control changes Android's media stream volume, so it follows the device's system audio path instead of only scaling the app's `AudioTrack`.
 - Decode and playback threads poll with short timeouts so shutdown is responsive.
 - Frame-level logging is behind `DEBUG_FRAMES = false`.
 

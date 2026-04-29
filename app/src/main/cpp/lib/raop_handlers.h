@@ -26,10 +26,6 @@ raop_handler_info(raop_conn_t *conn,
 					   http_request_t *request, http_response_t *response,
 					   char **response_data, int *response_datalen)
 {
-	const char *data;
-	int datalen;
-	data = http_request_get_data(request, &datalen);
-
 	char info[] = {0x62,0x70,0x6c,0x69,0x73,0x74,0x30,0x30,0x10,0x0e,0x12,0x01,0xff,0xff,0xfc,0x59
 			,0x61,0x75,0x64,0x69,0x6f,0x54,0x79,0x70,0x65,0xdf,0x10,0x0f,0x01,0x03,0x05,0x07
 			,0x08,0x0a,0x0c,0x0e,0x0f,0x11,0x1b,0x24,0x26,0x28,0x2a,0x02,0x04,0x06,0x06,0x09
@@ -85,6 +81,29 @@ raop_handler_info(raop_conn_t *conn,
 			,0x00,0x00,0x02,0xa8
 	};
 	size_t len = sizeof(info);
+	plist_t root_node = NULL;
+	plist_from_bin(info, len, &root_node);
+	if (root_node) {
+		if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
+			plist_dict_remove_item(root_node, "audioType");
+			plist_dict_remove_item(root_node, "audioFormats");
+			plist_dict_remove_item(root_node, "audioInputFormats");
+			plist_dict_remove_item(root_node, "audioOutputFormats");
+			plist_dict_remove_item(root_node, "audioLatencies");
+		}
+
+		uint32_t rsp_len = 0;
+		char* rsp = NULL;
+		plist_to_bin(root_node, &rsp, &rsp_len);
+		plist_free(root_node);
+		if (rsp) {
+			*response_data = rsp;
+			*response_datalen = rsp_len;
+			http_response_add_header(response, "Content-Type", "application/x-apple-binary-plist");
+			return;
+		}
+	}
+
 	*response_data = malloc(len);
 	memcpy(*response_data, info, len);
 	if (*response_data) {

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -20,6 +21,7 @@ import android.widget.ProgressBar
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
 
@@ -36,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var audioVolumeOverlayLabel: TextView
     private lateinit var audioVolumeOverlayBar: ProgressBar
     private lateinit var trafficMonitor: TrafficMonitorView
+    private lateinit var audioManager: AudioManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
@@ -50,6 +53,7 @@ class MainActivity : Activity() {
     private var trafficGestureStartY = 0f
     private var isTrafficGestureCandidate = false
     private var isStarted = false
+    private var isStreaming = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +72,7 @@ class MainActivity : Activity() {
         audioVolumeOverlayBar = findViewById(R.id.audio_volume_overlay_bar)
         trafficMonitor = findViewById(R.id.traffic_monitor)
         trafficMonitor.setOnClickListener { trafficMonitor.visibility = View.GONE }
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         configurePlaybackSurface(surfaceView)
         configureControlLayer()
         keepSurfaceProportional(surfaceView)
@@ -83,7 +88,7 @@ class MainActivity : Activity() {
             ::handleLatencySample,
             ::handleStreamStopped,
             acceptAudio,
-            audioVolume
+            MAX_AUDIO_VOLUME
         )
         dnsNotify = DNSNotify(this)
         wakeMode = loadWakeMode()
@@ -100,6 +105,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::audioManager.isInitialized) {
+            audioVolume = loadAudioVolume()
+            updateAudioVolumeUi()
+        }
         if (isStarted) {
             applyWakeMode()
         }
@@ -267,13 +276,16 @@ class MainActivity : Activity() {
     }
 
     private fun showWaitingStatus() {
+        isStreaming = false
         statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting for connection"
         startupPanel.visibility = View.VISIBLE
+        audioVolumeOverlay.visibility = View.GONE
         showControl(startupPanel)
     }
 
     private fun hideStatus() {
         runOnUiThread {
+            isStreaming = true
             startupPanel.visibility = View.GONE
         }
     }
@@ -297,6 +309,12 @@ class MainActivity : Activity() {
             acceptAudio = isChecked
             saveAcceptAudio(isChecked)
             raopServer.setAcceptAudio(isChecked)
+            if (isStarted) {
+                val port = raopServer.port
+                if (port != 0) {
+                    dnsNotify.registerRaop(port, isChecked)
+                }
+            }
             updateAudioVolumeUi()
         }
         updateAudioVolumeUi()
@@ -328,34 +346,51 @@ class MainActivity : Activity() {
     }
 
     private fun loadAudioVolume(): Float {
-        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-        return preferences.getFloat(PREFERENCE_AUDIO_VOLUME, DEFAULT_AUDIO_VOLUME)
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (maxVolume <= 0) {
+            return DEFAULT_AUDIO_VOLUME
+        }
+        return (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / maxVolume)
             .coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     }
 
     private fun saveAudioVolume(volume: Float) {
-        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putFloat(PREFERENCE_AUDIO_VOLUME, volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME))
-            .apply()
+        audioVolume = applySystemAudioVolume(volume)
     }
 
     private fun setAudioVolume(volume: Float, persist: Boolean) {
         audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
         if (acceptAudio) {
-            raopServer.setAudioVolume(audioVolume)
+            audioVolume = applySystemAudioVolume(audioVolume)
         }
         if (persist) {
             saveAudioVolume(audioVolume)
         }
         updateAudioVolumeUi()
-        showAudioVolumeOverlay()
+        if (isStreaming) {
+            showAudioVolumeOverlay()
+        }
+    }
+
+    private fun applySystemAudioVolume(volume: Float): Float {
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (maxVolume <= 0) {
+            return volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+        }
+        val volumeIndex = (volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME) * maxVolume)
+            .roundToInt()
+            .coerceIn(0, maxVolume)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volumeIndex, 0)
+        return volumeIndex.toFloat() / maxVolume
     }
 
     private fun updateAudioVolumeUi() {
+        if (::audioManager.isInitialized) {
+            audioVolume = loadAudioVolume()
+        }
         val progress = (audioVolume * 100).toInt()
         val label = if (acceptAudio) {
-            "Audio $progress%"
+            "Volume $progress%"
         } else {
             "Audio off"
         }
@@ -433,6 +468,11 @@ class MainActivity : Activity() {
     }
 
     private fun handleVolumeGesture(event: MotionEvent): Boolean {
+        if (!isStreaming) {
+            isVolumeGestureCandidate = false
+            isAdjustingVolume = false
+            return false
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 volumeGestureStartY = event.y
@@ -506,7 +546,7 @@ class MainActivity : Activity() {
         if (raopPort == 0) {
             Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
         } else {
-            dnsNotify.registerRaop(raopPort)
+            dnsNotify.registerRaop(raopPort, acceptAudio)
         }
 
         isStarted = true
@@ -577,7 +617,6 @@ class MainActivity : Activity() {
         private const val PREFERENCES_NAME = "receiver"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
         private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
-        private const val PREFERENCE_AUDIO_VOLUME = "audio_volume"
         private const val DEBUG_CODECS = false
         private const val STREAM_WIDTH = 1280
         private const val STREAM_HEIGHT = 720
