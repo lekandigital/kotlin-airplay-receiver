@@ -67,7 +67,6 @@ class VideoPlayer(
         try {
             val videoFormat = MediaFormat.createVideoFormat(MIME_TYPE, width, height)
             val codec = MediaCodec.createDecoderByType(MIME_TYPE)
-            decoder = codec
 
             val decoderInfo = codec.codecInfo
             Log.i(TAG, "decoder selected = ${decoderInfo.name}, size = ${width}x${height}")
@@ -84,7 +83,9 @@ class VideoPlayer(
             codec.configure(videoFormat, surface, null, 0)
             codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             codec.start()
+            decoder = codec
         } catch (e: Exception) {
+            releaseDecoder()
             e.printStackTrace()
         }
     }

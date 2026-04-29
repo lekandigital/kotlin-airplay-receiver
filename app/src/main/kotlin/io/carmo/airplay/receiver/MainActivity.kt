@@ -279,7 +279,6 @@ class MainActivity : Activity() {
     }
 
     private fun updateSurfaceLayout(surfaceView: SurfaceView) {
-        surfaceView.holder.setFixedSize(videoMode.width, videoMode.height)
         val parent = surfaceView.parent as? View ?: return
         val parentWidth = parent.width
         val parentHeight = parent.height
@@ -384,14 +383,14 @@ class MainActivity : Activity() {
 
     private fun loadVideoMode(): VideoMode {
         val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-        return VideoMode.fromPreferenceValue(preferences.getString(PREFERENCE_VIDEO_MODE, null))
+        return VideoMode.fromPreferenceValue(preferences.getString(PREFERENCE_VIDEO_MODE_V2, null))
             ?: VideoMode.HD
     }
 
     private fun saveVideoMode(mode: VideoMode) {
         getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(PREFERENCE_VIDEO_MODE, mode.preferenceValue)
+            .putString(PREFERENCE_VIDEO_MODE_V2, mode.preferenceValue)
             .apply()
     }
 
@@ -700,7 +699,7 @@ class MainActivity : Activity() {
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val DEFAULT_AUDIO_VOLUME = 1.0f
         private const val PREFERENCES_NAME = "receiver"
-        private const val PREFERENCE_VIDEO_MODE = "video_mode"
+        private const val PREFERENCE_VIDEO_MODE_V2 = "video_mode_v2"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
         private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
         private const val DEBUG_CODECS = false
