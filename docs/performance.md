@@ -38,7 +38,7 @@ The traffic monitor is intentionally modest:
 
 Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver advertises reduced RAOP audio capability through DNS-SD, strips audio format details from `/info`, and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
-Receiver exits on stream teardown or disconnect. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path.
+Receiver exits on explicit stream teardown, when the mirror media socket closes and no fresh media arrives during a short grace window, or when an established stream goes media-idle for 20 seconds. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path. Receiver does not exit merely because the RTSP control socket closes, since some senders recycle that socket while a long-running mirror stream is still active.
 
 ## Display And Decode
 
@@ -64,6 +64,7 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 Receiver prefers dropping stale media over building delay:
 
 - Video uses a tiny fixed-size `ArrayBlockingQueue` that preserves codec config while replacing pending video input with only the newest packet before enqueueing.
+- After fresh H.264 codec config, video waits for an IDR frame before rendering, avoiding transient corrupted output during 1080p decoder warm-up.
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.

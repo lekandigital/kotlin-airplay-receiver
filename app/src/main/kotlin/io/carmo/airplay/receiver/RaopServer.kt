@@ -1,6 +1,8 @@
 package io.carmo.airplay.receiver
 
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -26,13 +28,16 @@ class RaopServer(
 
     @Volatile private var videoPlayer: VideoPlayer? = null
     private var audioPlayer: AudioPlayer? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var serverId: Long = 0
     private var lastVideoActivityAtMs = 0L
+    @Volatile private var lastMediaPacketAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
     @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
+    @Volatile private var streamStopThresholdMs = MEDIA_IDLE_STOP_MS
 
     init {
         surfaceView.holder.addCallback(this)
@@ -111,6 +116,7 @@ class RaopServer(
     }
 
     fun stopServer() {
+        mainHandler.removeCallbacks(confirmStreamStopped)
         if (serverId != 0L) {
             stop(serverId)
         }
@@ -119,6 +125,7 @@ class RaopServer(
         audioPlayer?.stopPlay()
         audioPlayer = null
         lastVideoActivityAtMs = 0L
+        lastMediaPacketAtMs = 0L
         hasConnection = false
     }
 
@@ -157,7 +164,7 @@ class RaopServer(
 
     @Suppress("unused")
     fun onStreamStopped() {
-        onStreamStoppedCallback.invoke()
+        scheduleStreamStopCheck(STREAM_STOP_GRACE_MS)
     }
 
     val port: Int
@@ -168,10 +175,28 @@ class RaopServer(
     private external fun getPort(serverId: Long): Int
 
     private fun markConnected() {
+        lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        scheduleStreamStopCheck(MEDIA_IDLE_STOP_MS)
         if (!hasConnection) {
             hasConnection = true
             onConnectionStarted()
         }
+    }
+
+    private val confirmStreamStopped = Runnable {
+        if (!hasConnection) {
+            return@Runnable
+        }
+        val lastPacketAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
+        if (lastPacketAgeMs >= streamStopThresholdMs) {
+            onStreamStoppedCallback.invoke()
+        }
+    }
+
+    private fun scheduleStreamStopCheck(thresholdMs: Long) {
+        streamStopThresholdMs = thresholdMs
+        mainHandler.removeCallbacks(confirmStreamStopped)
+        mainHandler.postDelayed(confirmStreamStopped, thresholdMs)
     }
 
     private fun ensureAudioPlayer() {
@@ -256,6 +281,8 @@ class RaopServer(
         private const val MIN_AUDIO_VOLUME = 0.0f
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
+        private const val STREAM_STOP_GRACE_MS = 5_000L
+        private const val MEDIA_IDLE_STOP_MS = 20_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val NAL_TYPE_MASK = 0x1F
         private const val NAL_TYPE_IDR = 5

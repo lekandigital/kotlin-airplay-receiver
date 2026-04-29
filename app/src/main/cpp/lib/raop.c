@@ -234,18 +234,10 @@ static void
 conn_destroy(void *ptr)
 {
 	raop_conn_t *conn = ptr;
-	int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
 
-	if (conn->raop_rtp) {
-		/* This is done in case TEARDOWN was not called */
-		raop_rtp_destroy(conn->raop_rtp);
-	}
-    if (conn->raop_rtp_mirror) {
-        /* This is done in case TEARDOWN was not called */
-        raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
-    }
-	if (had_stream) {
-		conn_notify_stream_stopped(conn);
+	if (conn->raop_rtp || conn->raop_rtp_mirror) {
+		logger_log(conn->raop->logger, LOGGER_INFO,
+		           "Control connection closed while media session is active; keeping media session alive");
 	}
 	free(conn->local);
 	free(conn->remote);

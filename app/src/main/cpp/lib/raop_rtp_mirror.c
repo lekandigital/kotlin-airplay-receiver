@@ -529,6 +529,27 @@ raop_rtp_mirror_thread(void *arg)
     if (stream_fd != -1) {
         closesocket(stream_fd);
     }
+
+    MUTEX_LOCK(raop_rtp_mirror->run_mutex);
+    raop_rtp_mirror->running = 0;
+    MUTEX_UNLOCK(raop_rtp_mirror->run_mutex);
+
+    if (raop_rtp_mirror->mirror_data_sock != -1) {
+        closesocket(raop_rtp_mirror->mirror_data_sock);
+        raop_rtp_mirror->mirror_data_sock = -1;
+    }
+    if (raop_rtp_mirror->mirror_time_sock != -1) {
+        closesocket(raop_rtp_mirror->mirror_time_sock);
+        raop_rtp_mirror->mirror_time_sock = -1;
+    }
+
+    MUTEX_LOCK(raop_rtp_mirror->time_mutex);
+    COND_SIGNAL(raop_rtp_mirror->time_cond);
+    MUTEX_UNLOCK(raop_rtp_mirror->time_mutex);
+
+    if (raop_rtp_mirror->callbacks.stream_stopped) {
+        raop_rtp_mirror->callbacks.stream_stopped(raop_rtp_mirror->callbacks.cls);
+    }
     logger_log(raop_rtp_mirror->logger, LOGGER_INFO, "Exiting TCP raop_rtp_mirror_thread thread");
 #ifdef DUMP_H264
     fclose(file);

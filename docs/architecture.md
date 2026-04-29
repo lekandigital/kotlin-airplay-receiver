@@ -71,7 +71,7 @@ For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS 
 
 For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
 
-When the native RAOP connection receives `TEARDOWN`, or a connection is destroyed while audio or mirror RTP state exists, it reports stream stop through JNI. `RaopServer` forwards that to `MainActivity`, which exits the app so Receiver returns to Android instead of sitting on a stale black playback surface.
+When the native RAOP connection receives `TEARDOWN`, or the mirror media socket closes, it reports stream stop through JNI. `RaopServer` confirms that no fresh media arrived during a short grace window, then forwards that to `MainActivity`, which exits the app so Receiver returns to Android instead of sitting on a stale black playback surface. It also exits if an established stream goes media-idle for 20 seconds. A closed RTSP control socket alone is not treated as stream end because some senders close or recycle that socket during long-running mirroring.
 
 ## Media Playback Layer
 
@@ -119,10 +119,11 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 
 ## Disconnect Flow
 
-1. The sender sends `TEARDOWN`, or the RAOP connection is destroyed while stream state still exists.
-2. Native RAOP invokes the `stream_stopped` callback once for that connection.
+1. The sender sends `TEARDOWN`, or the mirror media socket closes.
+2. Native RAOP invokes the `stream_stopped` callback.
 3. JNI calls `RaopServer.onStreamStopped()`.
-4. `MainActivity` finishes and `onDestroy` stops DNS-SD advertisement, AirPlay/RAOP services, foreground notification, wake locks, and players.
+4. `RaopServer` waits briefly; if no new media packet arrives, it forwards the stop.
+5. `MainActivity` finishes and `onDestroy` stops DNS-SD advertisement, AirPlay/RAOP services, foreground notification, wake locks, and players.
 
 ## Audio Flow
 

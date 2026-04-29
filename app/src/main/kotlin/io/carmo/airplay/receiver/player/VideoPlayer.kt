@@ -23,17 +23,30 @@ class VideoPlayer(
     private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
     @Volatile private var isStopped = false
+    private var hasCodecConfig = false
+    private var isWaitingForKeyFrame = true
 
     fun addPacket(packet: NALPacket) {
         synchronized(packets) {
             if (packet.isCodecConfig) {
                 drainPackets()
+                hasCodecConfig = true
+                isWaitingForKeyFrame = true
                 if (!packets.offer(packet)) {
                     packet.release()
                 }
                 return
             }
 
+            if (!hasCodecConfig) {
+                packet.release()
+                return
+            }
+            if (isWaitingForKeyFrame && !packet.isKeyFrame) {
+                packet.release()
+                return
+            }
+            isWaitingForKeyFrame = false
             dropQueuedVideoFrames()
             if (!packets.offer(packet)) {
                 packet.release()
