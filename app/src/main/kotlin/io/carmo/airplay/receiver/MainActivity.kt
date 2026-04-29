@@ -123,7 +123,7 @@ class MainActivity : Activity() {
             applyWakeMode()
         }
         if (::startupPanel.isInitialized && !isStreaming) {
-            showWaitingStatus()
+            updateWaitingStatus()
         }
     }
 
@@ -131,7 +131,7 @@ class MainActivity : Activity() {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && ::startupPanel.isInitialized && !isStreaming) {
             configurePlaybackWindow()
-            showWaitingStatus()
+            updateWaitingStatus()
         }
     }
 
@@ -302,13 +302,23 @@ class MainActivity : Activity() {
 
     private fun showWaitingStatus() {
         isStreaming = false
-        startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
-        startupVersionLabel.visibility = View.VISIBLE
-        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
-        startupPanel.visibility = View.VISIBLE
-        audioVolumeOverlay.visibility = View.GONE
+        updateWaitingStatus()
+        if (startupVersionLabel.visibility != View.VISIBLE) {
+            startupVersionLabel.visibility = View.VISIBLE
+        }
+        if (startupPanel.visibility != View.VISIBLE) {
+            startupPanel.visibility = View.VISIBLE
+        }
+        if (audioVolumeOverlay.visibility != View.GONE) {
+            audioVolumeOverlay.visibility = View.GONE
+        }
         showControl(startupVersionLabel)
         showControl(startupPanel)
+    }
+
+    private fun updateWaitingStatus() {
+        startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
+        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
     }
 
     private fun hideStatus() {
@@ -331,7 +341,7 @@ class MainActivity : Activity() {
             raopServer.setVideoMode(selectedMode.width, selectedMode.height)
             updateSurfaceLayout(playbackSurface)
             if (!isStreaming) {
-                showWaitingStatus()
+                updateWaitingStatus()
             }
         }
     }

@@ -36,7 +36,6 @@
         android:background="@drawable/startup_panel_background"
         android:clickable="true"
         android:elevation="24dp"
-        android:focusable="true"
         android:gravity="center_horizontal"
         android:minWidth="460dp"
         android:orientation="vertical"
