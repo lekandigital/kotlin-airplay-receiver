@@ -1,6 +1,6 @@
 # Receiver Performance Notes
 
-Receiver targets the Lenovo ThinkSmart View running Android 8.1/API 27 on an 8-inch 1280x800 WVA touchscreen. The performance goal is not to add more UI; it is to keep receiver latency predictable on older hardware while keeping the receiver foreground and awake during use.
+Receiver targets the Lenovo ThinkSmart View running Android 8.1/API 27 on an 8-inch 1280x800 WVA touchscreen. The performance goal is to keep receiver latency predictable on older hardware while letting the operator choose how aggressively Receiver keeps the display awake.
 
 ## Android 8.1 Constraints
 
@@ -13,7 +13,23 @@ Android 8.1 is old enough that the app avoids newer platform APIs and keeps `min
 
 The UI layer is intentionally static after launch. There are no animations, timers, progress bars, polling widgets, or settings controls competing with decode and audio playback.
 
-The foreground activity sets `FLAG_KEEP_SCREEN_ON`, holds a screen wake lock, and runs a small foreground service so the ThinkSmart View display does not dim or drop Receiver out of the foreground while Receiver is active.
+The app runs a small foreground service while active so Android treats Receiver as a foreground task. The startup screen exposes three display policies:
+
+- `OS default`: no receiver wake lock or keep-screen-on window flag.
+- `Always awake`: sets `FLAG_KEEP_SCREEN_ON` and holds a screen wake lock while Receiver is active.
+- `Wake on activity`: allows normal display sleep, then briefly wakes and brings Receiver forward when major video activity arrives.
+
+Major video activity means the first video frame after an idle period, an H.264 IDR frame, or SPS/PPS stream configuration data.
+
+The optional traffic monitor is hidden by default and rendered as a transparent overlay. It charts recent media throughput plus receiver-side latency from Kotlin packet receipt to the audio write or video render handoff. These latency numbers measure Receiver's local pipeline, not sender-to-display wall-clock latency, because the AirPlay timestamps available here are stream-relative.
+
+The traffic monitor is intentionally modest:
+
+- Throughput is counted from decoded media bytes crossing into Kotlin, not raw encrypted network bytes.
+- Latency starts when Kotlin receives a direct media buffer from JNI.
+- Audio latency stops when `AudioTrack.write` is called.
+- Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
+- The chart uses 30 rolling one-second buckets and avoids opaque backgrounds.
 
 ## Display And Decode
 
@@ -40,6 +56,8 @@ Receiver prefers dropping stale media over building delay:
 
 - Video uses a small fixed-size `ArrayBlockingQueue` capped at 2 frames and trims backlog to keep only the newest pending packet before enqueueing.
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
+- The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
+- Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.
 - Audio uses a small fixed-size `ArrayBlockingQueue` capped at 4 PCM packets and trims backlog to 3 pending packets before enqueueing.
 - The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.
 - Playback threads request Android's urgent display/audio thread priorities.
@@ -60,7 +78,10 @@ Video still needs one copy into `MediaCodec` input buffers. Removing that would 
 
 For best results on the target device:
 
-- Keep the app in the foreground while receiving; the active receiver notification is expected while the app is running.
+- Pick the display policy on the startup screen before connecting; the choice is remembered locally.
+- Drag in from the top-right corner to show the traffic monitor; tap the monitor to hide it.
+- Interpret traffic monitor latency as local receiver pressure. It is useful for spotting queue/decode stalls, but not for comparing sender capture or network delay.
+- The active receiver notification is expected while the app is running.
 - Use a stable wired or strong Wi-Fi network.
 - Avoid enabling verbose media logging during real playback.
 - Prefer release builds for device testing.

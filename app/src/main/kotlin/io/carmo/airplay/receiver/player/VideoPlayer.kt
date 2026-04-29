@@ -5,13 +5,17 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import io.carmo.airplay.receiver.model.NALPacket
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") {
+class VideoPlayer(
+    private val surface: Surface,
+    private val onLatencySample: (Long) -> Unit = {}
+) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
     private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
@@ -109,7 +113,9 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
                 Log.d(TAG, "dequeueInputBuffer failed")
             }
 
-            drainOutput(codec, TIMEOUT_USEC)
+            if (drainOutput(codec, TIMEOUT_USEC)) {
+                onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
@@ -117,7 +123,7 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
         }
     }
 
-    private fun drainOutput(codec: MediaCodec, timeoutUsec: Long) {
+    private fun drainOutput(codec: MediaCodec, timeoutUsec: Long): Boolean {
         var pendingRenderIndex = -1
 
         outputLoop@ while (true) {
@@ -142,7 +148,9 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
 
         if (pendingRenderIndex >= 0) {
             codec.releaseOutputBuffer(pendingRenderIndex, true)
+            return true
         }
+        return false
     }
 
     private fun trimBacklog() {

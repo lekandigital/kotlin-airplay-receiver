@@ -11,14 +11,72 @@
         android:layout_height="match_parent"
         android:layout_gravity="center" />
 
-    <TextView
-        android:id="@+id/status"
+    <LinearLayout
+        android:id="@+id/startup_panel"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:gravity="center"
-        android:lineSpacingExtra="4dp"
+        android:background="#99000000"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
         android:padding="16dp"
-        android:textColor="#E6FFFFFF"
-        android:textSize="18sp" />
+        android:visibility="visible">
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#E6FFFFFF"
+            android:textSize="18sp" />
+
+        <RadioGroup
+            android:id="@+id/wake_mode_group"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/wake_mode_default"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:buttonTint="#E6FFFFFF"
+                android:text="@string/wake_mode_default"
+                android:textColor="#E6FFFFFF"
+                android:textSize="14sp" />
+
+            <RadioButton
+                android:id="@+id/wake_mode_always"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:buttonTint="#E6FFFFFF"
+                android:text="@string/wake_mode_always"
+                android:textColor="#E6FFFFFF"
+                android:textSize="14sp" />
+
+            <RadioButton
+                android:id="@+id/wake_mode_activity"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:buttonTint="#E6FFFFFF"
+                android:text="@string/wake_mode_activity"
+                android:textColor="#E6FFFFFF"
+            android:textSize="14sp" />
+        </RadioGroup>
+    </LinearLayout>
+
+    <io.carmo.airplay.receiver.TrafficMonitorView
+        android:id="@+id/traffic_monitor"
+        android:layout_width="260dp"
+        android:layout_height="140dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="12dp"
+        android:clickable="true"
+        android:visibility="gone" />
 </FrameLayout>

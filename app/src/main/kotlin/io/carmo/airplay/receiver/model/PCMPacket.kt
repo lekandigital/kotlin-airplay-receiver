@@ -6,7 +6,8 @@ class PCMPacket(
     val data: ByteBuffer,
     val size: Int,
     nativePointer: Long,
-    val pts: Long
+    val pts: Long,
+    val receivedAtMs: Long
 ) {
     private var pointer: Long = nativePointer
 

@@ -14,7 +14,7 @@ The final application is designed around four constraints:
 
 ## Runtime Overview
 
-At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, starts a foreground keepalive service, and starts both discovery and streaming services.
+At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, starts a foreground keepalive service, shows the display policy picker, and starts both discovery and streaming services.
 
 ```mermaid
 flowchart LR
@@ -35,9 +35,17 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground/awake handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name until the first media packet arrives.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name and display wake policy until the first media packet arrives.
+
+The display wake policy is stored in local preferences:
+
+- `OS default` leaves Android display behavior alone.
+- `Always awake` keeps the window and display awake while Receiver is active.
+- `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
 
 `ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
+
+`TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency using neutral outlined strokes so it remains readable over both light and dark mirrored content. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
 `DNSNotify` handles local network service registration. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements.
 
@@ -49,6 +57,10 @@ The Kotlin layer lives under `io.carmo.airplay.receiver`.
 - `onRecvAudioData(ByteBuffer, Int, Long, Long)`
 
 It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only once a valid rendering surface exists.
+
+For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS NAL units and reports those as major visual activity. It also reports the first video packet after a short idle period as major activity. Those events are used only by the `Wake on activity` display policy.
+
+For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
 
 ## Media Playback Layer
 
@@ -91,16 +103,16 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 1. The native mirror socket receives encrypted H.264 payloads.
 2. The native mirror buffer decrypts and normalizes NAL payloads.
 3. JNI copies frame bytes into a native-owned direct buffer and invokes `RaopServer.onRecvVideoData`.
-4. `RaopServer` enqueues an `NALPacket` into `VideoPlayer`.
-5. `VideoPlayer` feeds `MediaCodec` input buffers, releases output buffers to the display surface, and frees the native packet buffer.
+4. `RaopServer` records traffic, stamps the local receive time, and enqueues an `NALPacket` into `VideoPlayer`.
+5. `VideoPlayer` feeds `MediaCodec` input buffers, releases output buffers to the display surface, reports receiver-side latency, and frees the native packet buffer.
 
 ## Audio Flow
 
 1. The native RTP socket receives encrypted audio packets.
 2. The native RAOP buffer decrypts and decodes AAC to PCM.
 3. JNI copies PCM samples into a native-owned direct buffer and invokes `RaopServer.onRecvAudioData`.
-4. `RaopServer` enqueues a `PCMPacket` into `AudioPlayer`.
-5. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer and frees the native packet buffer.
+4. `RaopServer` records traffic, stamps the local receive time, and enqueues a `PCMPacket` into `AudioPlayer`.
+5. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer, reports receiver-side latency, and frees the native packet buffer.
 
 ## Build And CI
 

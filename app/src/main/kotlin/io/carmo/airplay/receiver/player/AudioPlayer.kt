@@ -6,11 +6,14 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
 import android.os.Process
+import android.os.SystemClock
 import io.carmo.airplay.receiver.model.PCMPacket
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
-class AudioPlayer : Thread("ReceiverAudioPlayer") {
+class AudioPlayer(
+    private val onLatencySample: (Long) -> Unit = {}
+) : Thread("ReceiverAudioPlayer") {
 
     private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
     private var track: AudioTrack? = createAudioTrack().also { it.play() }
@@ -56,6 +59,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
             packet.data.position(0)
             packet.data.limit(packet.size)
             track?.write(packet.data, packet.size, AudioTrack.WRITE_NON_BLOCKING)
+            onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
         } finally {
             packet.release()
         }

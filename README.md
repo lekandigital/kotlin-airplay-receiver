@@ -11,7 +11,19 @@ The application starts listening as soon as it is launched. There is no in-app c
 - Advertises itself on the local network as an AirPlay/RAOP target using the Android device name.
 - Receives H.264 screen mirroring and renders it to a centered proportional `SurfaceView`.
 - Receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
-- Keeps the UI intentionally minimal: a startup status line is shown while waiting, then the app behaves like a dedicated receiver.
+- Keeps the UI intentionally minimal: a startup status line and display wake policy picker are shown while waiting, then the app behaves like a dedicated receiver. A transparent traffic monitor can be pulled in from the top-right corner when needed.
+
+## Runtime Controls
+
+Receiver starts listening immediately, but the waiting screen exposes one display policy choice before a sender connects:
+
+- `OS default`: lets Android manage dimming, sleep, and screensaver behavior.
+- `Always awake`: keeps the display on while Receiver is active.
+- `Wake on activity`: lets the display sleep, then wakes Receiver for major visual activity such as a new stream after idle or H.264 key/config frames.
+
+The selected display policy is remembered on the device.
+
+During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent media bandwidth and Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
 
 ## Target Device
 

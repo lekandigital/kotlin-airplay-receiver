@@ -2,4 +2,7 @@
     <string name="app_name">Receiver</string>
     <string name="notification_channel_receiver">Receiver status</string>
     <string name="notification_receiver_active">AirPlay receiver is active</string>
+    <string name="wake_mode_default">OS default</string>
+    <string name="wake_mode_always">Always awake</string>
+    <string name="wake_mode_activity">Wake on activity</string>
 </resources>

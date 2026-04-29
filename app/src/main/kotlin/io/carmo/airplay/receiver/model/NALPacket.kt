@@ -8,7 +8,8 @@ class NALPacket(
     nativePointer: Long,
     val nalType: Int,
     val pts: Long,
-    val dts: Long
+    val dts: Long,
+    val receivedAtMs: Long
 ) {
     private var pointer: Long = nativePointer
 
