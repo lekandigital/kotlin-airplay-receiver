@@ -3,6 +3,7 @@ package io.carmo.airplay.receiver
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -67,6 +68,8 @@ class MainActivity : Activity() {
         audioVolumeOverlayBar = findViewById(R.id.audio_volume_overlay_bar)
         trafficMonitor = findViewById(R.id.traffic_monitor)
         trafficMonitor.setOnClickListener { trafficMonitor.visibility = View.GONE }
+        configurePlaybackSurface(surfaceView)
+        configureControlLayer()
         keepSurfaceProportional(surfaceView)
 
         acceptAudio = loadAcceptAudio()
@@ -129,6 +132,19 @@ class MainActivity : Activity() {
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             )
+    }
+
+    private fun configurePlaybackSurface(surfaceView: SurfaceView) {
+        surfaceView.setZOrderOnTop(false)
+        surfaceView.setZOrderMediaOverlay(false)
+        surfaceView.holder.setFormat(PixelFormat.OPAQUE)
+    }
+
+    private fun configureControlLayer() {
+        val elevation = CONTROL_OVERLAY_ELEVATION_DP * resources.displayMetrics.density
+        startupPanel.elevation = elevation
+        audioVolumeOverlay.elevation = elevation
+        trafficMonitor.elevation = elevation
     }
 
     private fun applyWakeMode() {
@@ -253,7 +269,7 @@ class MainActivity : Activity() {
     private fun showWaitingStatus() {
         statusView.text = "Announcing myself as ${dnsNotify.deviceName}\nWaiting for connection"
         startupPanel.visibility = View.VISIBLE
-        startupPanel.bringToFront()
+        showControl(startupPanel)
     }
 
     private fun hideStatus() {
@@ -352,7 +368,7 @@ class MainActivity : Activity() {
 
     private fun showAudioVolumeOverlay() {
         audioVolumeOverlay.visibility = View.VISIBLE
-        audioVolumeOverlay.bringToFront()
+        showControl(audioVolumeOverlay)
         audioVolumeOverlay.removeCallbacks(hideAudioVolumeOverlay)
         audioVolumeOverlay.postDelayed(hideAudioVolumeOverlay, VOLUME_OVERLAY_DURATION_MS)
     }
@@ -406,7 +422,7 @@ class MainActivity : Activity() {
                 val dragThreshold = TRAFFIC_GESTURE_DRAG_DP * resources.displayMetrics.density
                 if (draggedLeft >= dragThreshold || draggedDown >= dragThreshold) {
                     trafficMonitor.visibility = View.VISIBLE
-                    trafficMonitor.bringToFront()
+                    showControl(trafficMonitor)
                     isTrafficGestureCandidate = false
                 }
             }
@@ -498,6 +514,12 @@ class MainActivity : Activity() {
         Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
     }
 
+    private fun showControl(control: View) {
+        control.bringToFront()
+        control.translationZ = CONTROL_OVERLAY_ELEVATION_DP * resources.displayMetrics.density
+        control.invalidate()
+    }
+
     private fun startReceiverForegroundService() {
         val intent = Intent(this, ReceiverForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -542,6 +564,7 @@ class MainActivity : Activity() {
         private const val WAKE_NUDGE_LOCK_TAG = "ReceiverActivity"
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
+        private const val CONTROL_OVERLAY_ELEVATION_DP = 24f
         private const val TRAFFIC_GESTURE_EDGE_DP = 96f
         private const val TRAFFIC_GESTURE_DRAG_DP = 48f
         private const val VOLUME_GESTURE_EDGE_DP = 120f

@@ -23,15 +23,19 @@ class VideoPlayer(
     @Volatile private var isStopped = false
 
     fun addPacket(packet: NALPacket) {
-        trimBacklog()
-        if (!packets.offer(packet)) {
-            packets.poll()?.release()
+        synchronized(packets) {
+            if (packet.isCodecConfig) {
+                drainPackets()
+                if (!packets.offer(packet)) {
+                    packet.release()
+                }
+                return
+            }
+
+            trimBacklog()
             if (!packets.offer(packet)) {
                 packet.release()
                 return
-            }
-            if (DEBUG_FRAMES) {
-                Log.d(TAG, "video queue full; dropped oldest frame")
             }
         }
     }
@@ -108,12 +112,12 @@ class VideoPlayer(
                 packet.data.position(0)
                 packet.data.limit(packet.size)
                 inputBuffer.put(packet.data)
-                codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.pts, 0)
+                codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.presentationTimeUs, packet.codecFlags)
             } else if (DEBUG_FRAMES) {
                 Log.d(TAG, "dequeueInputBuffer failed")
             }
 
-            if (drainOutput(codec, TIMEOUT_USEC)) {
+            if (!packet.isCodecConfig && drainOutput(codec, TIMEOUT_USEC)) {
                 onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
         } catch (e: Exception) {
@@ -155,7 +159,17 @@ class VideoPlayer(
 
     private fun trimBacklog() {
         while (packets.size >= MAX_QUEUED_FRAMES) {
+            val packet = packets.peek() ?: return
+            if (packet.isCodecConfig) {
+                if (DEBUG_FRAMES) {
+                    Log.d(TAG, "preserving codec config; dropping incoming video frame")
+                }
+                return
+            }
             packets.poll()?.release() ?: return
+            if (DEBUG_FRAMES) {
+                Log.d(TAG, "video queue full; dropped oldest frame")
+            }
         }
     }
 
@@ -181,8 +195,8 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 2
-        private const val MAX_QUEUED_FRAMES = 1
+        private const val MAX_BUFFERED_FRAMES = 4
+        private const val MAX_QUEUED_FRAMES = 3
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720
