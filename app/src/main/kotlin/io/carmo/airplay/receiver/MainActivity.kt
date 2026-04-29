@@ -335,7 +335,7 @@ class MainActivity : Activity() {
 
     private fun loadAcceptAudio(): Boolean {
         val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-        return preferences.getBoolean(PREFERENCE_ACCEPT_AUDIO, true)
+        return preferences.getBoolean(PREFERENCE_ACCEPT_AUDIO, false)
     }
 
     private fun saveAcceptAudio(acceptAudio: Boolean) {

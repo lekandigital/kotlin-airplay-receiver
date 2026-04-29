@@ -31,7 +31,7 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling one-second buckets and avoids opaque backgrounds.
 
-Audio can be disabled before a sender connects. In that mode Receiver advertises reduced RAOP audio capability through DNS-SD, strips audio format details from `/info`, and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
+Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver advertises reduced RAOP audio capability through DNS-SD, strips audio format details from `/info`, and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
 Receiver exits on stream teardown or disconnect. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path.
 
@@ -58,7 +58,7 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a small fixed-size `ArrayBlockingQueue` capped at 2 frames and trims backlog to keep only the newest pending packet before enqueueing.
+- Video uses a tiny fixed-size `ArrayBlockingQueue` that preserves codec config while replacing pending video input with only the newest packet before enqueueing.
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.

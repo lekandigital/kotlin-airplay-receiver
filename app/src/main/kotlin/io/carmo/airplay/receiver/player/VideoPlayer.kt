@@ -32,7 +32,7 @@ class VideoPlayer(
                 return
             }
 
-            trimBacklog()
+            dropQueuedVideoFrames()
             if (!packets.offer(packet)) {
                 packet.release()
                 return
@@ -157,20 +157,20 @@ class VideoPlayer(
         return false
     }
 
-    private fun trimBacklog() {
-        while (packets.size >= MAX_QUEUED_FRAMES) {
-            val packet = packets.peek() ?: return
-            if (packet.isCodecConfig) {
+    private fun dropQueuedVideoFrames() {
+        val retainedConfig = ArrayList<NALPacket>(MAX_BUFFERED_FRAMES)
+        while (true) {
+            val queuedPacket = packets.poll() ?: break
+            if (queuedPacket.isCodecConfig) {
+                retainedConfig.add(queuedPacket)
+            } else {
+                queuedPacket.release()
                 if (DEBUG_FRAMES) {
-                    Log.d(TAG, "preserving codec config; dropping incoming video frame")
+                    Log.d(TAG, "dropped queued video frame")
                 }
-                return
-            }
-            packets.poll()?.release() ?: return
-            if (DEBUG_FRAMES) {
-                Log.d(TAG, "video queue full; dropped oldest frame")
             }
         }
+        retainedConfig.forEach { packets.offer(it) }
     }
 
     private fun drainPackets() {

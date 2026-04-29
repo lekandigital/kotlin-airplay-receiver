@@ -10,7 +10,7 @@ The application starts listening as soon as it is launched. There is no in-app c
 
 - Advertises itself on the local network as an AirPlay/RAOP target using the Android device name.
 - Receives H.264 screen mirroring and renders it to a centered proportional `SurfaceView`.
-- Receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
+- Optionally receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
 - Keeps the UI intentionally minimal: a startup status line and display wake policy picker are shown while waiting, then the app behaves like a dedicated receiver. A transparent traffic monitor can be pulled in from the top-right corner when needed.
 
 ## Runtime Controls
@@ -25,7 +25,7 @@ The selected display policy is remembered on the device.
 
 During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent media bandwidth with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
 
-Audio is accepted by default. Clear `Accept audio` before connecting to advertise reduced audio capability and reject the sender's audio setup while keeping mirroring available. When audio is accepted and a stream is active, swipe vertically from the right edge to adjust Android media volume; a visible blue volume bar is shown on the waiting screen and briefly as a vertical on-video indicator during swipe changes.
+Audio is off by default because Receiver prioritizes minimum video latency. Enable `Accept audio` before connecting only when audio is needed; when it is off, Receiver advertises reduced audio capability and rejects the sender's audio setup while keeping mirroring available. When audio is accepted and a stream is active, swipe vertically from the right edge to adjust Android media volume; a visible blue volume bar is shown on the waiting screen and briefly as a vertical on-video indicator during swipe changes.
 
 When the sender stops or disconnects from a mirrored stream, Receiver exits and lets Android return to the previous/system screen.
 
