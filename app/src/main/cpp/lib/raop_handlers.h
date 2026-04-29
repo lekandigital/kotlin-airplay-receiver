@@ -348,6 +348,17 @@ raop_handler_setup(raop_conn_t *conn,
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 3");
         unsigned short cport = 0, tport = 0, dport = 0;
 
+        if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
+            const char *cseq = http_request_get_header(request, "CSeq");
+            logger_log(conn->raop->logger, LOGGER_INFO, "Rejecting audio SETUP because audio is disabled");
+            http_response_reset(response, "RTSP/1.0", 453, "Not Enough Bandwidth");
+            if (cseq) {
+                http_response_add_header(response, "CSeq", cseq);
+            }
+            http_response_add_header(response, "Server", "AirTunes/220.68");
+            return;
+        }
+
         if (conn->raop_rtp) {
             raop_rtp_start_audio(conn->raop_rtp, use_udp, remote_cport, remote_tport, &cport, &tport, &dport);
             logger_log(conn->raop->logger, LOGGER_DEBUG, "RAOP initialized success");

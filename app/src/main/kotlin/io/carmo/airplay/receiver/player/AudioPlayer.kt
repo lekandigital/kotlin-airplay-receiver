@@ -12,10 +12,12 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class AudioPlayer(
+    initialVolume: Float = DEFAULT_VOLUME,
     private val onLatencySample: (Long) -> Unit = {}
 ) : Thread("ReceiverAudioPlayer") {
 
     private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
+    @Volatile private var volume = initialVolume.coerceIn(MIN_VOLUME, MAX_VOLUME)
     private var track: AudioTrack? = createAudioTrack().also { it.play() }
     @Volatile private var isStopped = false
 
@@ -27,6 +29,11 @@ class AudioPlayer(
                 packet.release()
             }
         }
+    }
+
+    fun setVolume(volume: Float) {
+        this.volume = volume.coerceIn(MIN_VOLUME, MAX_VOLUME)
+        track?.setVolume(this.volume)
     }
 
     override fun run() {
@@ -58,6 +65,7 @@ class AudioPlayer(
         try {
             packet.data.position(0)
             packet.data.limit(packet.size)
+            track?.setVolume(volume)
             track?.write(packet.data, packet.size, AudioTrack.WRITE_NON_BLOCKING)
             onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
         } finally {
@@ -109,10 +117,14 @@ class AudioPlayer(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             audioTrack.setBufferSizeInFrames(minBufferSize / BYTES_PER_FRAME)
         }
+        audioTrack.setVolume(volume)
         return audioTrack
     }
 
     companion object {
+        private const val DEFAULT_VOLUME = 1.0f
+        private const val MIN_VOLUME = 0.0f
+        private const val MAX_VOLUME = 1.0f
         private const val MAX_BUFFERED_PACKETS = 4
         private const val MAX_QUEUED_PACKETS = 3
         private const val SAMPLE_RATE = 44100

@@ -31,6 +31,10 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling one-second buckets and avoids opaque backgrounds.
 
+Audio can be disabled before a sender connects. In that mode Receiver rejects the native audio `SETUP` request, which is preferable to accepting audio and discarding it later. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
+
+Receiver exits on stream teardown or disconnect. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path.
+
 ## Display And Decode
 
 The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver configures the decoder for 1280x720 and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
@@ -63,6 +67,7 @@ Receiver prefers dropping stale media over building delay:
 - Playback threads request Android's urgent display/audio thread priorities.
 - The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
 - Audio writes use non-blocking `AudioTrack` writes so full platform buffers do not grow receiver-side latency.
+- Local volume control uses `AudioTrack.setVolume` and does not ask the sender to change its stream volume.
 - Decode and playback threads poll with short timeouts so shutdown is responsive.
 - Frame-level logging is behind `DEBUG_FRAMES = false`.
 
@@ -79,7 +84,10 @@ Video still needs one copy into `MediaCodec` input buffers. Removing that would 
 For best results on the target device:
 
 - Pick the display policy on the startup screen before connecting; the choice is remembered locally.
+- Leave `Accept audio` checked to play audio; clear it before connecting to reject audio setup from the sender.
+- Swipe vertically from the right edge to adjust local audio volume when audio is accepted.
 - Drag in from the top-right corner to show the traffic monitor; tap the monitor to hide it.
+- Expect Receiver to close when the sender disconnects; relaunch it from Android when the device should listen again.
 - Interpret traffic monitor latency as local receiver pressure. It is useful for spotting queue/decode stalls, but not for comparing sender capture or network delay.
 - The active receiver notification is expected while the app is running.
 - Use a stable wired or strong Wi-Fi network.

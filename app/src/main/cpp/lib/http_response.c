@@ -55,13 +55,8 @@ http_response_t *
 http_response_init(const char *protocol, int code, const char *message)
 {
 	http_response_t *response;
-	char codestr[4];
 
 	assert(code >= 100 && code < 1000);
-
-	/* Convert code into string */
-	memset(codestr, 0, sizeof(codestr));
-	snprintf(codestr, sizeof(codestr), "%u", code);
 
 	response = calloc(1, sizeof(http_response_t));
 	if (!response) {
@@ -76,15 +71,34 @@ http_response_init(const char *protocol, int code, const char *message)
 		return NULL;
 	}
 
-	/* Add first line of response to the data array */
+	http_response_reset(response, protocol, code, message);
+
+	return response;
+}
+
+void
+http_response_reset(http_response_t *response, const char *protocol, int code, const char *message)
+{
+	char codestr[4];
+
+	assert(response);
+	assert(protocol);
+	assert(message);
+	assert(code >= 100 && code < 1000);
+
+	memset(codestr, 0, sizeof(codestr));
+	snprintf(codestr, sizeof(codestr), "%u", code);
+
+	response->complete = 0;
+	response->disconnect = 0;
+	response->data_length = 0;
+
 	http_response_add_data(response, protocol, strlen(protocol));
 	http_response_add_data(response, " ", 1);
 	http_response_add_data(response, codestr, strlen(codestr));
 	http_response_add_data(response, " ", 1);
 	http_response_add_data(response, message, strlen(message));
 	http_response_add_data(response, "\r\n", 2);
-
-	return response;
 }
 
 void

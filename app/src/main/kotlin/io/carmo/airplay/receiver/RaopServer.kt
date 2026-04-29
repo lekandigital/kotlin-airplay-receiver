@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import io.carmo.airplay.receiver.model.NALPacket
+import io.carmo.airplay.receiver.model.NativeMemory
 import io.carmo.airplay.receiver.model.PCMPacket
 import io.carmo.airplay.receiver.player.AudioPlayer
 import io.carmo.airplay.receiver.player.VideoPlayer
@@ -15,17 +16,25 @@ class RaopServer(
     private val onConnectionStarted: () -> Unit,
     private val onVideoActivity: (Boolean) -> Unit,
     private val onTrafficSample: (Int) -> Unit,
-    private val onLatencySample: (Long) -> Unit
+    private val onLatencySample: (Long) -> Unit,
+    private val onStreamStoppedCallback: () -> Unit,
+    initialAcceptAudio: Boolean,
+    initialAudioVolume: Float
 ) : SurfaceHolder.Callback {
 
     private var videoPlayer: VideoPlayer? = null
-    private var audioPlayer: AudioPlayer? = AudioPlayer(onLatencySample).also { it.start() }
+    private var audioPlayer: AudioPlayer? = null
     private var serverId: Long = 0
     private var lastVideoActivityAtMs = 0L
+    @Volatile private var acceptAudio = initialAcceptAudio
+    @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
 
     init {
         surfaceView.holder.addCallback(this)
+        if (acceptAudio) {
+            ensureAudioPlayer()
+        }
     }
 
     @Suppress("unused")
@@ -59,6 +68,10 @@ class RaopServer(
             Log.d(TAG, "onRecvAudioData pcm bytes = $size, pts = $pts")
         }
         markConnected()
+        if (!acceptAudio) {
+            NativeMemory.free(nativePointer)
+            return
+        }
         onTrafficSample(size)
         val packet = PCMPacket(
             data = buffer,
@@ -86,8 +99,8 @@ class RaopServer(
     override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
 
     fun startServer() {
-        if (audioPlayer == null) {
-            audioPlayer = AudioPlayer(onLatencySample).also { it.start() }
+        if (acceptAudio) {
+            ensureAudioPlayer()
         }
         if (videoPlayer == null && surfaceView.holder.surface.isValid) {
             videoPlayer = VideoPlayer(surfaceView.holder.surface, onLatencySample).also { it.start() }
@@ -110,6 +123,29 @@ class RaopServer(
         hasConnection = false
     }
 
+    fun setAcceptAudio(acceptAudio: Boolean) {
+        this.acceptAudio = acceptAudio
+        if (acceptAudio) {
+            ensureAudioPlayer()
+        } else {
+            audioPlayer?.stopPlay()
+            audioPlayer = null
+        }
+    }
+
+    fun setAudioVolume(volume: Float) {
+        audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+        audioPlayer?.setVolume(audioVolume)
+    }
+
+    @Suppress("unused")
+    fun isAudioAccepted(): Boolean = acceptAudio
+
+    @Suppress("unused")
+    fun onStreamStopped() {
+        onStreamStoppedCallback.invoke()
+    }
+
     val port: Int
         get() = if (serverId != 0L) getPort(serverId) else 0
 
@@ -121,6 +157,14 @@ class RaopServer(
         if (!hasConnection) {
             hasConnection = true
             onConnectionStarted()
+        }
+    }
+
+    private fun ensureAudioPlayer() {
+        if (audioPlayer == null) {
+            audioPlayer = AudioPlayer(audioVolume, onLatencySample).also { it.start() }
+        } else {
+            audioPlayer?.setVolume(audioVolume)
         }
     }
 
@@ -166,6 +210,8 @@ class RaopServer(
     companion object {
         private const val TAG = "Receiver-RAOP"
         private const val DEBUG_FRAMES = false
+        private const val MIN_AUDIO_VOLUME = 0.0f
+        private const val MAX_AUDIO_VOLUME = 1.0f
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val NAL_TYPE_MASK = 0x1F
         private const val NAL_TYPE_IDR = 5

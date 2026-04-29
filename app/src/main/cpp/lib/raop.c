@@ -58,10 +58,23 @@ struct raop_conn_s {
 	unsigned char *remote;
 	int remotelen;
 
+	int stream_stopped_notified;
 };
 typedef struct raop_conn_s raop_conn_t;
 
 #include "raop_handlers.h"
+
+static void
+conn_notify_stream_stopped(raop_conn_t *conn)
+{
+	if (!conn || conn->stream_stopped_notified) {
+		return;
+	}
+	conn->stream_stopped_notified = 1;
+	if (conn->raop->callbacks.stream_stopped) {
+		conn->raop->callbacks.stream_stopped(conn->raop->callbacks.cls);
+	}
+}
 
 static void *
 conn_init(void *opaque, unsigned char *local, int locallen, unsigned char *remote, int remotelen)
@@ -190,6 +203,7 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 		}
 	} else if (!strcmp(method, "TEARDOWN")) {
 		http_response_add_header(*response, "Connection", "close");
+		int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
 		if (conn->raop_rtp) {
 			/* Destroy our RTP session */
 			raop_rtp_destroy(conn->raop_rtp);
@@ -200,6 +214,9 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
             raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
             conn->raop_rtp_mirror = NULL;
         }
+		if (had_stream) {
+			conn_notify_stream_stopped(conn);
+		}
 	}
 	if (handler != NULL) {
 		handler(conn, request, *response, &response_data, &response_datalen);
@@ -216,6 +233,7 @@ static void
 conn_destroy(void *ptr)
 {
 	raop_conn_t *conn = ptr;
+	int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
 
 	if (conn->raop_rtp) {
 		/* This is done in case TEARDOWN was not called */
@@ -225,6 +243,9 @@ conn_destroy(void *ptr)
         /* This is done in case TEARDOWN was not called */
         raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
     }
+	if (had_stream) {
+		conn_notify_stream_stopped(conn);
+	}
 	free(conn->local);
 	free(conn->remote);
 	pairing_session_destroy(conn->pairing);
@@ -364,4 +385,3 @@ raop_stop(raop_t *raop)
 	assert(raop);
 	httpd_stop(raop->httpd);
 }
-

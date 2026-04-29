@@ -17,6 +17,8 @@ struct raop_jni_context {
     jobject server;
     jmethodID on_recv_audio_data;
     jmethodID on_recv_video_data;
+    jmethodID is_audio_accepted;
+    jmethodID on_stream_stopped;
 };
 
 static void DetachJniThread(void*) {
@@ -103,10 +105,32 @@ audio_process(void *cls, pcm_data_struct *data)
     OnRecvAudioData(cls, data);
 }
 
+extern "C" int
+audio_accept(void *cls)
+{
+    raop_jni_context* context = static_cast<raop_jni_context*>(cls);
+    JNIEnv* jniEnv = GetJniEnv();
+    if (jniEnv == NULL || context == NULL || context->is_audio_accepted == NULL) {
+        return 1;
+    }
+    return jniEnv->CallBooleanMethod(context->server, context->is_audio_accepted) ? 1 : 0;
+}
+
 extern "C" void
 audio_set_volume(void *cls, void *opaque, float volume)
 {
 
+}
+
+extern "C" void
+stream_stopped(void *cls)
+{
+    raop_jni_context* context = static_cast<raop_jni_context*>(cls);
+    JNIEnv* jniEnv = GetJniEnv();
+    if (jniEnv == NULL || context == NULL || context->on_stream_stopped == NULL) {
+        return;
+    }
+    jniEnv->CallVoidMethod(context->server, context->on_stream_stopped);
 }
 
 extern "C" void
@@ -145,9 +169,15 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     jclass cls = env->GetObjectClass(object);
     context->on_recv_audio_data = env->GetMethodID(cls, "onRecvAudioData", "(Ljava/nio/ByteBuffer;IJJ)V");
     context->on_recv_video_data = env->GetMethodID(cls, "onRecvVideoData", "(Ljava/nio/ByteBuffer;IJIJJ)V");
+    context->is_audio_accepted = env->GetMethodID(cls, "isAudioAccepted", "()Z");
+    context->on_stream_stopped = env->GetMethodID(cls, "onStreamStopped", "()V");
     env->DeleteLocalRef(cls);
 
-    if (context->server == NULL || context->on_recv_audio_data == NULL || context->on_recv_video_data == NULL) {
+    if (context->server == NULL ||
+        context->on_recv_audio_data == NULL ||
+        context->on_recv_video_data == NULL ||
+        context->is_audio_accepted == NULL ||
+        context->on_stream_stopped == NULL) {
         if (context->server != NULL) {
             env->DeleteGlobalRef(context->server);
         }
@@ -159,7 +189,9 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     memset(&raop_cbs, 0, sizeof(raop_cbs));
     raop_cbs.cls = context;
     raop_cbs.audio_process = audio_process;
+    raop_cbs.audio_accept = audio_accept;
     raop_cbs.audio_set_volume = audio_set_volume;
+    raop_cbs.stream_stopped = stream_stopped;
     raop_cbs.video_process = video_process;
 
     raop_t *raop = raop_init(10, &raop_cbs);

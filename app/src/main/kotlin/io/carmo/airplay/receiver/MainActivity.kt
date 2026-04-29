@@ -13,7 +13,9 @@ import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.widget.CheckBox
 import android.widget.FrameLayout
+import android.widget.ProgressBar
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
@@ -26,11 +28,23 @@ class MainActivity : Activity() {
     private lateinit var startupPanel: View
     private lateinit var statusView: TextView
     private lateinit var wakeModeGroup: RadioGroup
+    private lateinit var acceptAudioCheckbox: CheckBox
+    private lateinit var audioVolumeLabel: TextView
+    private lateinit var audioVolumeBar: ProgressBar
+    private lateinit var audioVolumeOverlay: View
+    private lateinit var audioVolumeOverlayLabel: TextView
+    private lateinit var audioVolumeOverlayBar: ProgressBar
     private lateinit var trafficMonitor: TrafficMonitorView
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
+    private var acceptAudio = true
+    private var audioVolume = DEFAULT_AUDIO_VOLUME
     private var lastWakeNudgeAtMs = 0L
+    private var volumeGestureStartY = 0f
+    private var volumeGestureStartLevel = DEFAULT_AUDIO_VOLUME
+    private var isVolumeGestureCandidate = false
+    private var isAdjustingVolume = false
     private var trafficGestureStartX = 0f
     private var trafficGestureStartY = 0f
     private var isTrafficGestureCandidate = false
@@ -45,21 +59,33 @@ class MainActivity : Activity() {
         startupPanel = findViewById(R.id.startup_panel)
         statusView = findViewById(R.id.status)
         wakeModeGroup = findViewById(R.id.wake_mode_group)
+        acceptAudioCheckbox = findViewById(R.id.accept_audio)
+        audioVolumeLabel = findViewById(R.id.audio_volume_label)
+        audioVolumeBar = findViewById(R.id.audio_volume_bar)
+        audioVolumeOverlay = findViewById(R.id.audio_volume_overlay)
+        audioVolumeOverlayLabel = findViewById(R.id.audio_volume_overlay_label)
+        audioVolumeOverlayBar = findViewById(R.id.audio_volume_overlay_bar)
         trafficMonitor = findViewById(R.id.traffic_monitor)
         trafficMonitor.setOnClickListener { trafficMonitor.visibility = View.GONE }
         keepSurfaceProportional(surfaceView)
 
+        acceptAudio = loadAcceptAudio()
+        audioVolume = loadAudioVolume()
         airPlayServer = AirPlayServer()
         raopServer = RaopServer(
             surfaceView,
             ::hideStatus,
             ::handleVideoActivity,
             ::handleTrafficSample,
-            ::handleLatencySample
+            ::handleLatencySample,
+            ::handleStreamStopped,
+            acceptAudio,
+            audioVolume
         )
         dnsNotify = DNSNotify(this)
         wakeMode = loadWakeMode()
         configureWakeModeControl()
+        configureAudioControls()
         showWaitingStatus()
 
         if (DEBUG_CODECS) {
@@ -83,6 +109,9 @@ class MainActivity : Activity() {
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         handleTrafficMonitorGesture(event)
+        if (handleVolumeGesture(event)) {
+            return true
+        }
         return super.dispatchTouchEvent(event)
     }
 
@@ -246,6 +275,17 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun configureAudioControls() {
+        acceptAudioCheckbox.isChecked = acceptAudio
+        acceptAudioCheckbox.setOnCheckedChangeListener { _, isChecked ->
+            acceptAudio = isChecked
+            saveAcceptAudio(isChecked)
+            raopServer.setAcceptAudio(isChecked)
+            updateAudioVolumeUi()
+        }
+        updateAudioVolumeUi()
+    }
+
     private fun loadWakeMode(): WakeMode {
         val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
         return WakeMode.fromPreferenceValue(preferences.getString(PREFERENCE_WAKE_MODE, null))
@@ -257,6 +297,68 @@ class MainActivity : Activity() {
             .edit()
             .putString(PREFERENCE_WAKE_MODE, mode.preferenceValue)
             .apply()
+    }
+
+    private fun loadAcceptAudio(): Boolean {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        return preferences.getBoolean(PREFERENCE_ACCEPT_AUDIO, true)
+    }
+
+    private fun saveAcceptAudio(acceptAudio: Boolean) {
+        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(PREFERENCE_ACCEPT_AUDIO, acceptAudio)
+            .apply()
+    }
+
+    private fun loadAudioVolume(): Float {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        return preferences.getFloat(PREFERENCE_AUDIO_VOLUME, DEFAULT_AUDIO_VOLUME)
+            .coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+    }
+
+    private fun saveAudioVolume(volume: Float) {
+        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putFloat(PREFERENCE_AUDIO_VOLUME, volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME))
+            .apply()
+    }
+
+    private fun setAudioVolume(volume: Float, persist: Boolean) {
+        audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+        if (acceptAudio) {
+            raopServer.setAudioVolume(audioVolume)
+        }
+        if (persist) {
+            saveAudioVolume(audioVolume)
+        }
+        updateAudioVolumeUi()
+        showAudioVolumeOverlay()
+    }
+
+    private fun updateAudioVolumeUi() {
+        val progress = (audioVolume * 100).toInt()
+        val label = if (acceptAudio) {
+            "Audio $progress%"
+        } else {
+            "Audio off"
+        }
+        audioVolumeLabel.text = label
+        audioVolumeBar.progress = if (acceptAudio) progress else 0
+        audioVolumeBar.isEnabled = acceptAudio
+        audioVolumeOverlayLabel.text = label
+        audioVolumeOverlayBar.progress = if (acceptAudio) progress else 0
+    }
+
+    private fun showAudioVolumeOverlay() {
+        audioVolumeOverlay.visibility = View.VISIBLE
+        audioVolumeOverlay.bringToFront()
+        audioVolumeOverlay.removeCallbacks(hideAudioVolumeOverlay)
+        audioVolumeOverlay.postDelayed(hideAudioVolumeOverlay, VOLUME_OVERLAY_DURATION_MS)
+    }
+
+    private val hideAudioVolumeOverlay = Runnable {
+        audioVolumeOverlay.visibility = View.GONE
     }
 
     private fun handleVideoActivity(isMajorUpdate: Boolean) {
@@ -276,6 +378,14 @@ class MainActivity : Activity() {
 
     private fun handleLatencySample(latencyMs: Long) {
         trafficMonitor.recordLatency(latencyMs)
+    }
+
+    private fun handleStreamStopped() {
+        runOnUiThread {
+            if (!isFinishing) {
+                finishAndRemoveTask()
+            }
+        }
     }
 
     private fun handleTrafficMonitorGesture(event: MotionEvent) {
@@ -304,6 +414,51 @@ class MainActivity : Activity() {
                 isTrafficGestureCandidate = false
             }
         }
+    }
+
+    private fun handleVolumeGesture(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                volumeGestureStartY = event.y
+                volumeGestureStartLevel = audioVolume
+                isAdjustingVolume = false
+                val edgeSize = VOLUME_GESTURE_EDGE_DP * resources.displayMetrics.density
+                isVolumeGestureCandidate = event.x >= window.decorView.width - edgeSize &&
+                    event.y > edgeSize
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!isVolumeGestureCandidate) {
+                    return false
+                }
+                val verticalDrag = volumeGestureStartY - event.y
+                val range = VOLUME_GESTURE_RANGE_DP * resources.displayMetrics.density
+                if (!isAdjustingVolume && kotlin.math.abs(verticalDrag) < VOLUME_GESTURE_START_DP * resources.displayMetrics.density) {
+                    return false
+                }
+                isAdjustingVolume = true
+                if (acceptAudio) {
+                    setAudioVolume(volumeGestureStartLevel + verticalDrag / range, persist = false)
+                } else {
+                    updateAudioVolumeUi()
+                    showAudioVolumeOverlay()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (isAdjustingVolume && acceptAudio) {
+                    saveAudioVolume(audioVolume)
+                }
+                val consumed = isAdjustingVolume
+                isVolumeGestureCandidate = false
+                isAdjustingVolume = false
+                return consumed
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                isVolumeGestureCandidate = false
+                isAdjustingVolume = false
+            }
+        }
+        return false
     }
 
     private fun logSupportedCodecs() {
@@ -389,8 +544,17 @@ class MainActivity : Activity() {
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
         private const val TRAFFIC_GESTURE_EDGE_DP = 96f
         private const val TRAFFIC_GESTURE_DRAG_DP = 48f
+        private const val VOLUME_GESTURE_EDGE_DP = 120f
+        private const val VOLUME_GESTURE_START_DP = 12f
+        private const val VOLUME_GESTURE_RANGE_DP = 240f
+        private const val VOLUME_OVERLAY_DURATION_MS = 1_500L
+        private const val MIN_AUDIO_VOLUME = 0.0f
+        private const val MAX_AUDIO_VOLUME = 1.0f
+        private const val DEFAULT_AUDIO_VOLUME = 1.0f
         private const val PREFERENCES_NAME = "receiver"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
+        private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
+        private const val PREFERENCE_AUDIO_VOLUME = "audio_volume"
         private const val DEBUG_CODECS = false
         private const val STREAM_WIDTH = 1280
         private const val STREAM_HEIGHT = 720

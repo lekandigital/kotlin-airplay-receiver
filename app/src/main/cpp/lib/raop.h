@@ -33,6 +33,8 @@ struct raop_callbacks_s {
 
 	void  (*audio_process)(void *cls, pcm_data_struct *data);
     void  (*video_process)(void *cls, h264_decode_struct *data);
+	int   (*audio_accept)(void *cls);
+	void  (*stream_stopped)(void *cls);
 
 	/* Optional but recommended callback functions */
 	void  (*audio_flush)(void *cls, void *session);

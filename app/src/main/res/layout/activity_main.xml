@@ -66,8 +66,72 @@
                 android:buttonTint="#E6FFFFFF"
                 android:text="@string/wake_mode_activity"
                 android:textColor="#E6FFFFFF"
-            android:textSize="14sp" />
+                android:textSize="14sp" />
         </RadioGroup>
+
+        <CheckBox
+            android:id="@+id/accept_audio"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:buttonTint="#E6FFFFFF"
+            android:checked="true"
+            android:text="@string/accept_audio"
+            android:textColor="#E6FFFFFF"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/audio_volume_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#E6FFFFFF"
+            android:textSize="13sp" />
+
+        <ProgressBar
+            android:id="@+id/audio_volume_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="8dp"
+            android:layout_marginTop="4dp"
+            android:max="100"
+            android:progress="100"
+            android:progressTint="#E6FFFFFF"
+            android:progressBackgroundTint="#4DFFFFFF" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/audio_volume_overlay"
+        android:layout_width="220dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center|end"
+        android:layout_marginEnd="32dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/audio_volume_overlay_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:shadowColor="#E6000000"
+            android:shadowDx="0"
+            android:shadowDy="0"
+            android:shadowRadius="3"
+            android:textColor="#FFFFFFFF"
+            android:textSize="14sp" />
+
+        <ProgressBar
+            android:id="@+id/audio_volume_overlay_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="200dp"
+            android:layout_height="8dp"
+            android:layout_marginTop="6dp"
+            android:max="100"
+            android:progress="100"
+            android:progressTint="#E6FFFFFF"
+            android:progressBackgroundTint="#66000000" />
     </LinearLayout>
 
     <io.carmo.airplay.receiver.TrafficMonitorView

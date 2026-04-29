@@ -25,6 +25,10 @@ The selected display policy is remembered on the device.
 
 During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent media bandwidth and Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
 
+Audio is accepted by default. Clear `Accept audio` before connecting to reject the sender's audio setup while keeping mirroring available. When audio is accepted, swipe vertically from the right edge to adjust Receiver's local playback volume; a visible volume bar is shown on the waiting screen and briefly during swipe changes.
+
+When the sender stops or disconnects from a mirrored stream, Receiver exits and lets Android return to the previous/system screen.
+
 ## Target Device
 
 Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder keeps the mirrored H.264 stream at 1280x720 and renders it into a centered 16:9 surface without distortion.

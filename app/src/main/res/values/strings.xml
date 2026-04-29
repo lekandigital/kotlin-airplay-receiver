@@ -5,4 +5,5 @@
     <string name="wake_mode_default">OS default</string>
     <string name="wake_mode_always">Always awake</string>
     <string name="wake_mode_activity">Wake on activity</string>
+    <string name="accept_audio">Accept audio</string>
 </resources>

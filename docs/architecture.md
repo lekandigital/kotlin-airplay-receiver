@@ -43,6 +43,8 @@ The display wake policy is stored in local preferences:
 - `Always awake` keeps the window and display awake while Receiver is active.
 - `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
 
+Audio acceptance and local playback volume are also stored in local preferences. If `Accept audio` is off before connection, the native RAOP handler rejects the audio `SETUP` request instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately as a fallback. If audio is accepted, a right-edge vertical swipe adjusts `AudioTrack` volume and displays a transient volume bar.
+
 `ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency using neutral outlined strokes so it remains readable over both light and dark mirrored content. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
@@ -61,6 +63,8 @@ It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only o
 For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS NAL units and reports those as major visual activity. It also reports the first video packet after a short idle period as major activity. Those events are used only by the `Wake on activity` display policy.
 
 For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
+
+When the native RAOP connection receives `TEARDOWN`, or a connection is destroyed while audio or mirror RTP state exists, it reports stream stop through JNI. `RaopServer` forwards that to `MainActivity`, which exits the app so Receiver returns to Android instead of sitting on a stale black playback surface.
 
 ## Media Playback Layer
 
@@ -106,13 +110,21 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 4. `RaopServer` records traffic, stamps the local receive time, and enqueues an `NALPacket` into `VideoPlayer`.
 5. `VideoPlayer` feeds `MediaCodec` input buffers, releases output buffers to the display surface, reports receiver-side latency, and frees the native packet buffer.
 
+## Disconnect Flow
+
+1. The sender sends `TEARDOWN`, or the RAOP connection is destroyed while stream state still exists.
+2. Native RAOP invokes the `stream_stopped` callback once for that connection.
+3. JNI calls `RaopServer.onStreamStopped()`.
+4. `MainActivity` finishes and `onDestroy` stops DNS-SD advertisement, AirPlay/RAOP services, foreground notification, wake locks, and players.
+
 ## Audio Flow
 
 1. The native RTP socket receives encrypted audio packets.
-2. The native RAOP buffer decrypts and decodes AAC to PCM.
-3. JNI copies PCM samples into a native-owned direct buffer and invokes `RaopServer.onRecvAudioData`.
-4. `RaopServer` records traffic, stamps the local receive time, and enqueues a `PCMPacket` into `AudioPlayer`.
-5. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer, reports receiver-side latency, and frees the native packet buffer.
+2. If audio is disabled, the native RAOP handler rejects audio setup before RTP audio starts.
+3. Otherwise, the native RAOP buffer decrypts and decodes AAC to PCM.
+4. JNI copies PCM samples into a native-owned direct buffer and invokes `RaopServer.onRecvAudioData`.
+5. `RaopServer` records traffic, stamps the local receive time, and enqueues a `PCMPacket` into `AudioPlayer`.
+6. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer at the configured local volume, reports receiver-side latency, and frees the native packet buffer.
 
 ## Build And CI
 
