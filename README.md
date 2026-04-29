@@ -30,7 +30,7 @@ Display behavior controls what Receiver does while it is active:
 
 The selected stream resolution and display policy are remembered on the device.
 
-During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent media bandwidth with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
+During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent completed media bandwidth samples with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
 
 Audio is off by default because Receiver prioritizes minimum video latency. Enable `Accept audio` before connecting only when audio is needed; when it is off, Receiver advertises reduced audio capability and rejects the sender's audio setup while keeping mirroring available. When audio is accepted and a stream is active, swipe vertically from the right edge to adjust Android media volume; a visible blue volume bar is shown on the waiting screen and briefly as a vertical on-video indicator during swipe changes.
 

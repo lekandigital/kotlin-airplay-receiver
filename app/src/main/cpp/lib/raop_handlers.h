@@ -340,6 +340,12 @@ raop_handler_setup(raop_conn_t *conn,
         pairing_get_ecdh_secret_key(conn->pairing, ecdh_secret);
         conn->raop_rtp = raop_rtp_init(conn->raop->logger, &conn->raop->callbacks, conn->remote, conn->remotelen, aeskey, aesiv, ecdh_secret, timing_rport);
 		conn->raop_rtp_mirror = raop_rtp_mirror_init(conn->raop->logger, &conn->raop->callbacks, conn->remote, conn->remotelen, aeskey, ecdh_secret, timing_rport);
+		if (conn->raop_rtp) {
+			raop_add_active_rtp(conn->raop, conn->raop_rtp);
+		}
+		if (conn->raop_rtp_mirror) {
+			raop_add_active_mirror(conn->raop, conn->raop_rtp_mirror);
+		}
     } else if (conn->setup == 1) {
 		unsigned short tport=0, dport=0;
         conn->setup++;

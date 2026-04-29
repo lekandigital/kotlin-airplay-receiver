@@ -24,7 +24,7 @@ class TrafficMonitorView @JvmOverloads constructor(
     private val linePath = Path()
     private val lock = Any()
 
-    private var currentSecond = -1L
+    private var currentSample = -1L
     private var currentBytes = 0L
     private var currentLatencyTotal = 0L
     private var currentLatencySamples = 0
@@ -76,7 +76,7 @@ class TrafficMonitorView @JvmOverloads constructor(
 
     private val ticker = object : Runnable {
         override fun run() {
-            rotateToCurrentSecond()
+            rotateToCurrentSample()
             invalidate()
             if (visibility == VISIBLE) {
                 postDelayed(this, TICK_MS)
@@ -93,11 +93,9 @@ class TrafficMonitorView @JvmOverloads constructor(
             return
         }
         synchronized(lock) {
-            rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
+            rotateToSample(currentSampleIndex())
             currentBytes += byteCount.toLong()
-            bandwidthBitsPerSecond[BUCKET_COUNT - 1] = bytesToBits(currentBytes)
         }
-        postInvalidate()
     }
 
     fun recordLatency(latency: Long) {
@@ -105,12 +103,10 @@ class TrafficMonitorView @JvmOverloads constructor(
             return
         }
         synchronized(lock) {
-            rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
+            rotateToSample(currentSampleIndex())
             currentLatencyTotal += latency
             currentLatencySamples++
-            latencyMs[BUCKET_COUNT - 1] = currentLatencyTotal.toFloat() / currentLatencySamples
         }
-        postInvalidate()
     }
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
@@ -125,7 +121,7 @@ class TrafficMonitorView @JvmOverloads constructor(
         super.onDraw(canvas)
 
         val snapshots = synchronized(lock) {
-            rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
+            rotateToSample(currentSampleIndex())
             bandwidthBitsPerSecond.copyOf() to latencyMs.copyOf()
         }
         val bandwidthSnapshot = snapshots.first
@@ -185,28 +181,40 @@ class TrafficMonitorView @JvmOverloads constructor(
         canvas.drawText(text, x, y, textPaint)
     }
 
-    private fun rotateToCurrentSecond() {
+    private fun rotateToCurrentSample() {
         synchronized(lock) {
-            rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
+            rotateToSample(currentSampleIndex())
         }
     }
 
-    private fun rotateToSecond(second: Long) {
-        if (currentSecond == -1L) {
-            currentSecond = second
+    private fun currentSampleIndex(): Long = SystemClock.elapsedRealtime() / SAMPLE_MS
+
+    private fun rotateToSample(sample: Long) {
+        if (currentSample == -1L) {
+            currentSample = sample
             return
         }
-        val elapsedSeconds = second - currentSecond
-        if (elapsedSeconds <= 0L) {
+        val elapsedSamples = sample - currentSample
+        if (elapsedSamples <= 0L) {
             return
         }
 
-        val shifts = elapsedSeconds.coerceAtMost(BUCKET_COUNT.toLong()).toInt()
-        repeat(shifts) {
+        val completedBandwidth = bytesToBitsPerSecond(currentBytes)
+        val completedLatency = if (currentLatencySamples > 0) {
+            currentLatencyTotal.toFloat() / currentLatencySamples
+        } else {
+            0f
+        }
+        val shifts = elapsedSamples.coerceAtMost(BUCKET_COUNT.toLong()).toInt()
+        repeat(shifts) { shift ->
             shiftLeft(bandwidthBitsPerSecond)
             shiftLeft(latencyMs)
+            if (shift == 0 && elapsedSamples <= BUCKET_COUNT) {
+                bandwidthBitsPerSecond[BUCKET_COUNT - 1] = completedBandwidth
+                latencyMs[BUCKET_COUNT - 1] = completedLatency
+            }
         }
-        currentSecond = second
+        currentSample = sample
         currentBytes = 0L
         currentLatencyTotal = 0L
         currentLatencySamples = 0
@@ -219,7 +227,8 @@ class TrafficMonitorView @JvmOverloads constructor(
         values[values.lastIndex] = 0f
     }
 
-    private fun bytesToBits(bytes: Long): Float = bytes * BITS_PER_BYTE
+    private fun bytesToBitsPerSecond(bytes: Long): Float =
+        bytes.toFloat() * BITS_PER_BYTE * MILLIS_PER_SECOND / SAMPLE_MS
 
     private fun formatBitsPerSecond(value: Float): String {
         val absoluteValue = value.absoluteValue
@@ -241,7 +250,8 @@ class TrafficMonitorView @JvmOverloads constructor(
 
     companion object {
         private const val BUCKET_COUNT = 30
-        private const val TICK_MS = 1_000L
+        private const val SAMPLE_MS = 500L
+        private const val TICK_MS = SAMPLE_MS
         private const val MILLIS_PER_SECOND = 1_000L
         private const val BITS_PER_BYTE = 8f
         private const val KILOBIT = 1_000f

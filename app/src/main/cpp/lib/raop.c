@@ -31,6 +31,8 @@
 #include "raop_rtp_mirror.h"
 #include <android/log.h>
 
+#define MAX_ACTIVE_SESSIONS 16
+
 struct raop_s {
 	/* Callbacks for audio and video */
 	raop_callbacks_t callbacks;
@@ -41,6 +43,8 @@ struct raop_s {
 	/* Pairing, HTTP daemon and RSA key */
 	pairing_t *pairing;
 	httpd_t *httpd;
+	raop_rtp_t *active_rtps[MAX_ACTIVE_SESSIONS];
+	raop_rtp_mirror_t *active_mirrors[MAX_ACTIVE_SESSIONS];
 
     unsigned short port;
 };
@@ -63,7 +67,84 @@ struct raop_conn_s {
 };
 typedef struct raop_conn_s raop_conn_t;
 
+static int raop_has_active_rtp(raop_t *raop, raop_rtp_t *rtp);
+static int raop_has_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror);
+static void raop_add_active_rtp(raop_t *raop, raop_rtp_t *rtp);
+static void raop_add_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror);
+static void raop_remove_active_rtp(raop_t *raop, raop_rtp_t *rtp);
+static void raop_remove_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror);
+
 #include "raop_handlers.h"
+
+static int
+raop_has_active_rtp(raop_t *raop, raop_rtp_t *rtp)
+{
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (raop->active_rtps[i] == rtp) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int
+raop_has_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror)
+{
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (raop->active_mirrors[i] == mirror) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void
+raop_add_active_rtp(raop_t *raop, raop_rtp_t *rtp)
+{
+	if (!rtp || raop_has_active_rtp(raop, rtp)) {
+		return;
+	}
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (!raop->active_rtps[i]) {
+			raop->active_rtps[i] = rtp;
+			return;
+		}
+	}
+}
+
+static void
+raop_add_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror)
+{
+	if (!mirror || raop_has_active_mirror(raop, mirror)) {
+		return;
+	}
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (!raop->active_mirrors[i]) {
+			raop->active_mirrors[i] = mirror;
+			return;
+		}
+	}
+}
+
+static void
+raop_remove_active_rtp(raop_t *raop, raop_rtp_t *rtp)
+{
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (raop->active_rtps[i] == rtp) {
+			raop->active_rtps[i] = NULL;
+		}
+	}
+}
+
+static void
+raop_remove_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror)
+{
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (raop->active_mirrors[i] == mirror) {
+			raop->active_mirrors[i] = NULL;
+		}
+	}
+}
 
 static void
 conn_notify_stream_stopped(raop_conn_t *conn)
@@ -74,6 +155,24 @@ conn_notify_stream_stopped(raop_conn_t *conn)
 	conn->stream_stopped_notified = 1;
 	if (conn->raop->callbacks.stream_stopped) {
 		conn->raop->callbacks.stream_stopped(conn->raop->callbacks.cls);
+	}
+}
+
+static void
+raop_destroy_active_sessions(raop_t *raop)
+{
+	if (!raop) {
+		return;
+	}
+	for (int i = 0; i < MAX_ACTIVE_SESSIONS; i++) {
+		if (raop->active_rtps[i]) {
+			raop_rtp_destroy(raop->active_rtps[i]);
+			raop->active_rtps[i] = NULL;
+		}
+		if (raop->active_mirrors[i]) {
+			raop_rtp_mirror_destroy(raop->active_mirrors[i]);
+			raop->active_mirrors[i] = NULL;
+		}
 	}
 }
 
@@ -206,11 +305,13 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 		http_response_add_header(*response, "Connection", "close");
 		int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
 		if (conn->raop_rtp) {
+			raop_remove_active_rtp(conn->raop, conn->raop_rtp);
 			/* Destroy our RTP session */
 			raop_rtp_destroy(conn->raop_rtp);
 			conn->raop_rtp = NULL;
 		}
         if (conn->raop_rtp_mirror) {
+            raop_remove_active_mirror(conn->raop, conn->raop_rtp_mirror);
             /* Destroy our mirror session */
             raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
             conn->raop_rtp_mirror = NULL;
@@ -239,6 +340,14 @@ conn_destroy(void *ptr)
 		logger_log(conn->raop->logger, LOGGER_INFO,
 		           "Control connection closed while media session is active; keeping media session alive");
 	}
+	if (conn->raop_rtp && !raop_has_active_rtp(conn->raop, conn->raop_rtp)) {
+		raop_rtp_destroy(conn->raop_rtp);
+	}
+	if (conn->raop_rtp_mirror && !raop_has_active_mirror(conn->raop, conn->raop_rtp_mirror)) {
+		raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
+	}
+	conn->raop_rtp = NULL;
+	conn->raop_rtp_mirror = NULL;
 	free(conn->local);
 	free(conn->remote);
 	pairing_session_destroy(conn->pairing);
@@ -308,6 +417,7 @@ raop_destroy(raop_t *raop)
 {
 	if (raop) {
 		raop_stop(raop);
+		raop_destroy_active_sessions(raop);
 
 		pairing_destroy(raop->pairing);
 		httpd_destroy(raop->httpd);
