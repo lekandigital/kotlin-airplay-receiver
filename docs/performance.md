@@ -1,6 +1,6 @@
 # Receiver Performance Notes
 
-Receiver targets the Lenovo ThinkSmart View running Android 8.1/API 27 on an 8-inch 1280x800 WVA touchscreen. The performance goal is not to add more UI or background behavior; it is to keep receiver latency predictable on older hardware.
+Receiver targets the Lenovo ThinkSmart View running Android 8.1/API 27 on an 8-inch 1280x800 WVA touchscreen. The performance goal is not to add more UI; it is to keep receiver latency predictable on older hardware while keeping the receiver foreground and awake during use.
 
 ## Android 8.1 Constraints
 
@@ -13,7 +13,7 @@ Android 8.1 is old enough that the app avoids newer platform APIs and keeps `min
 
 The UI layer is intentionally static after launch. There are no animations, timers, progress bars, polling widgets, or settings controls competing with decode and audio playback.
 
-The foreground activity also sets `FLAG_KEEP_SCREEN_ON` so the ThinkSmart View display does not dim while Receiver is active.
+The foreground activity sets `FLAG_KEEP_SCREEN_ON`, holds a screen wake lock, and runs a small foreground service so the ThinkSmart View display does not dim or drop Receiver out of the foreground while Receiver is active.
 
 ## Display And Decode
 
@@ -38,8 +38,10 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a small fixed-size `ArrayBlockingQueue` capped at 3 frames and trims backlog before enqueueing new packets.
-- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 8 PCM packets; when full, the oldest PCM packet is dropped.
+- Video uses a small fixed-size `ArrayBlockingQueue` capped at 2 frames and trims backlog to keep only the newest pending packet before enqueueing.
+- Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
+- Audio uses a small fixed-size `ArrayBlockingQueue` capped at 4 PCM packets and trims backlog to 3 pending packets before enqueueing.
+- The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.
 - Playback threads request Android's urgent display/audio thread priorities.
 - The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
 - Audio writes use non-blocking `AudioTrack` writes so full platform buffers do not grow receiver-side latency.
@@ -58,7 +60,7 @@ Video still needs one copy into `MediaCodec` input buffers. Removing that would 
 
 For best results on the target device:
 
-- Keep the app in the foreground while receiving.
+- Keep the app in the foreground while receiving; the active receiver notification is expected while the app is running.
 - Use a stable wired or strong Wi-Fi network.
 - Avoid enabling verbose media logging during real playback.
 - Prefer release builds for device testing.

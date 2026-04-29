@@ -14,11 +14,12 @@ The final application is designed around four constraints:
 
 ## Runtime Overview
 
-At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, and starts both discovery and streaming services.
+At launch, `MainActivity` creates the playback surface, enters immersive full-screen mode, starts a foreground keepalive service, and starts both discovery and streaming services.
 
 ```mermaid
 flowchart LR
     Launcher["Android launcher"] --> Activity["MainActivity"]
+    Activity --> Foreground["ReceiverForegroundService"]
     Activity --> AirPlay["AirPlayServer"]
     Activity --> RAOP["RaopServer"]
     Activity --> DNS["DNSNotify"]
@@ -34,7 +35,9 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name until the first media packet arrives.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground/awake handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the stream's 16:9 aspect ratio so 1280x720 mirroring is not vertically stretched. It also shows a small startup status overlay with the advertised device name until the first media packet arrives.
+
+`ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
 
 `DNSNotify` handles local network service registration. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements.
 
@@ -49,9 +52,9 @@ It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only o
 
 ## Media Playback Layer
 
-`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a small fixed-size queue capped at 6 frames so stale frames are dropped instead of allowing latency to grow without limit. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
+`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a small fixed-size queue capped at 2 frames and trims pending input to the newest frame so stale frames are dropped instead of allowing latency to grow without limit. It also drains decoder output and renders only the newest waiting output frame. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
 
-`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1, requests low-latency playback mode where the platform supports it, and writes PCM from direct `ByteBuffer` packets. PCM packets are capped at 24 queued packets for the same reason as video: when the receiver falls behind, bounded latency is better than endless buffering.
+`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1, requests low-latency playback mode where the platform supports it, and writes PCM from direct `ByteBuffer` packets. PCM packets are capped at 4 queued packets and trimmed to 3 pending packets for the same reason as video: when the receiver falls behind, bounded latency is better than endless buffering.
 
 Both playback threads are deliberately small. They do not own Android UI objects other than the render surface, do not perform per-frame logging in normal builds, and do not retain unbounded packet history.
 
@@ -122,4 +125,4 @@ See `docs/performance.md` for the performance assumptions behind the Kotlin/nati
 
 ## Deliberate Omissions
 
-Receiver does not include an in-app start/stop button, device name editor, settings screen, account system, or background service. The intended operating model is simple: launch it when the ThinkSmart View should act as a receiver, and stop it through Android system controls.
+Receiver does not include an in-app start/stop button, device name editor, settings screen, or account system. The intended operating model is simple: launch it when the ThinkSmart View should act as a receiver, and stop it through Android system controls.

@@ -1,7 +1,11 @@
 package io.carmo.airplay.receiver
 
 import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceView
@@ -17,12 +21,13 @@ class MainActivity : Activity() {
     private lateinit var raopServer: RaopServer
     private lateinit var dnsNotify: DNSNotify
     private lateinit var statusView: TextView
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private var isStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        keepPlaybackSurfaceFullScreen()
+        configurePlaybackWindow()
 
         val surfaceView = findViewById<SurfaceView>(R.id.surface)
         statusView = findViewById(R.id.status)
@@ -40,13 +45,24 @@ class MainActivity : Activity() {
         startServer()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (isStarted) {
+            keepReceiverAwake()
+        }
+    }
+
     override fun onDestroy() {
         stopServer()
         super.onDestroy()
     }
 
-    private fun keepPlaybackSurfaceFullScreen() {
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    private fun configurePlaybackWindow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
@@ -55,6 +71,35 @@ class MainActivity : Activity() {
                 or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun keepReceiverAwake() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        val wakeLock = screenWakeLock ?: run {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
+                "$packageName:$WAKE_LOCK_TAG"
+            ).apply {
+                setReferenceCounted(false)
+                screenWakeLock = this
+            }
+        }
+
+        if (!wakeLock.isHeld) {
+            wakeLock.acquire()
+        }
+    }
+
+    private fun allowScreenSaver() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        val wakeLock = screenWakeLock
+        if (wakeLock?.isHeld == true) {
+            wakeLock.release()
+        }
     }
 
     private fun keepSurfaceProportional(surfaceView: SurfaceView) {
@@ -115,6 +160,7 @@ class MainActivity : Activity() {
             return
         }
 
+        startReceiverForegroundService()
         airPlayServer.startServer()
         val airplayPort = airPlayServer.port
         if (airplayPort == 0) {
@@ -132,7 +178,21 @@ class MainActivity : Activity() {
         }
 
         isStarted = true
+        keepReceiverAwake()
         Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
+    }
+
+    private fun startReceiverForegroundService() {
+        val intent = Intent(this, ReceiverForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun stopReceiverForegroundService() {
+        stopService(Intent(this, ReceiverForegroundService::class.java))
     }
 
     private fun stopServer() {
@@ -143,10 +203,13 @@ class MainActivity : Activity() {
         airPlayServer.stopServer()
         raopServer.stopServer()
         isStarted = false
+        allowScreenSaver()
+        stopReceiverForegroundService()
     }
 
     companion object {
         private const val TAG = "Receiver"
+        private const val WAKE_LOCK_TAG = "ReceiverActive"
         private const val DEBUG_CODECS = false
         private const val STREAM_WIDTH = 1280
         private const val STREAM_HEIGHT = 720

@@ -17,6 +17,7 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     @Volatile private var isStopped = false
 
     fun addPacket(packet: PCMPacket) {
+        trimBacklog()
         if (!packets.offer(packet)) {
             packets.poll()?.release()
             if (!packets.offer(packet)) {
@@ -57,6 +58,12 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
             track?.write(packet.data, packet.size, AudioTrack.WRITE_NON_BLOCKING)
         } finally {
             packet.release()
+        }
+    }
+
+    private fun trimBacklog() {
+        while (packets.size >= MAX_QUEUED_PACKETS) {
+            packets.poll()?.release() ?: return
         }
     }
 
@@ -102,7 +109,8 @@ class AudioPlayer : Thread("ReceiverAudioPlayer") {
     }
 
     companion object {
-        private const val MAX_BUFFERED_PACKETS = 8
+        private const val MAX_BUFFERED_PACKETS = 4
+        private const val MAX_QUEUED_PACKETS = 3
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT

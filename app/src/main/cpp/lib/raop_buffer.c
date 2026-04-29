@@ -30,7 +30,7 @@
 #include "fdk-aac/libSYS/include/FDK_audio.h"
 #include "stream.h"
 
-#define RAOP_BUFFER_LENGTH 512
+#define RAOP_BUFFER_LENGTH 64
 
 typedef struct {
 	/* Packet available */

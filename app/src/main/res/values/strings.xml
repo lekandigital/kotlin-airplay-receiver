@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Receiver</string>
+    <string name="notification_channel_receiver">Receiver status</string>
+    <string name="notification_receiver_active">AirPlay receiver is active</string>
 </resources>

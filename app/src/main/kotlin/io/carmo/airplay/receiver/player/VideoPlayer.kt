@@ -87,6 +87,8 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
         }
 
         try {
+            drainOutput(codec, 0L)
+
             val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex)
@@ -107,19 +109,39 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
                 Log.d(TAG, "dequeueInputBuffer failed")
             }
 
-            var outputBufferIndex: Int
-            do {
-                outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC)
-                if (outputBufferIndex >= 0) {
-                    codec.releaseOutputBuffer(outputBufferIndex, true)
-                } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED && DEBUG_FRAMES) {
-                    Log.d(TAG, "output format changed: ${codec.outputFormat}")
-                }
-            } while (outputBufferIndex >= 0)
+            drainOutput(codec, TIMEOUT_USEC)
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
             packet.release()
+        }
+    }
+
+    private fun drainOutput(codec: MediaCodec, timeoutUsec: Long) {
+        var pendingRenderIndex = -1
+
+        outputLoop@ while (true) {
+            val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, timeoutUsec)
+            when {
+                outputBufferIndex >= 0 -> {
+                    if (pendingRenderIndex >= 0) {
+                        codec.releaseOutputBuffer(pendingRenderIndex, false)
+                    }
+                    pendingRenderIndex = outputBufferIndex
+                }
+                outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    if (DEBUG_FRAMES) {
+                        Log.d(TAG, "output format changed: ${codec.outputFormat}")
+                    }
+                }
+                else -> {
+                    break@outputLoop
+                }
+            }
+        }
+
+        if (pendingRenderIndex >= 0) {
+            codec.releaseOutputBuffer(pendingRenderIndex, true)
         }
     }
 
@@ -151,8 +173,8 @@ class VideoPlayer(private val surface: Surface) : Thread("ReceiverVideoPlayer") 
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 3
-        private const val MAX_QUEUED_FRAMES = 2
+        private const val MAX_BUFFERED_FRAMES = 2
+        private const val MAX_QUEUED_FRAMES = 1
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720
