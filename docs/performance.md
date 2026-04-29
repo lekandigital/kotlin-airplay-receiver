@@ -21,7 +21,7 @@ The app runs a small foreground service while active so Android treats Receiver 
 
 Major video activity means the first video frame after an idle period, an H.264 IDR frame, or SPS/PPS stream configuration data.
 
-The optional traffic monitor is hidden by default and rendered as a transparent overlay. It charts recent media throughput plus receiver-side latency from Kotlin packet receipt to the audio write or video render handoff. These latency numbers measure Receiver's local pipeline, not sender-to-display wall-clock latency, because the AirPlay timestamps available here are stream-relative.
+The optional traffic monitor is hidden by default and rendered as a transparent overlay. It charts recent media throughput with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus receiver-side latency from Kotlin packet receipt to the audio write or video render handoff. These latency numbers measure Receiver's local pipeline, not sender-to-display wall-clock latency, because the AirPlay timestamps available here are stream-relative.
 
 The traffic monitor is intentionally modest:
 

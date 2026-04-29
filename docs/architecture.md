@@ -43,11 +43,11 @@ The display wake policy is stored in local preferences:
 - `Always awake` keeps the window and display awake while Receiver is active.
 - `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
 
-Audio acceptance and local playback volume are also stored in local preferences. If `Accept audio` is off before connection, the native RAOP handler rejects the audio `SETUP` request instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately as a fallback. If audio is accepted, a right-edge vertical swipe adjusts `AudioTrack` volume and displays a transient volume bar.
+Audio acceptance and local playback volume are also stored in local preferences. If `Accept audio` is off before connection, the native RAOP handler rejects the audio `SETUP` request instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately as a fallback. If audio is accepted, a right-edge vertical swipe adjusts `AudioTrack` volume and displays a transient blue vertical volume bar over the video.
 
 `ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
 
-`TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency using neutral outlined strokes so it remains readable over both light and dark mirrored content. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
+`TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
 `DNSNotify` handles local network service registration. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements.
 

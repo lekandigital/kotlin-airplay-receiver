@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
+import kotlin.math.absoluteValue
 import kotlin.math.max
 
 class TrafficMonitorView @JvmOverloads constructor(
@@ -17,7 +18,7 @@ class TrafficMonitorView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    private val bandwidthMbps = FloatArray(BUCKET_COUNT)
+    private val bandwidthBitsPerSecond = FloatArray(BUCKET_COUNT)
     private val latencyMs = FloatArray(BUCKET_COUNT)
     private val graphRect = RectF()
     private val linePath = Path()
@@ -39,25 +40,26 @@ class TrafficMonitorView @JvmOverloads constructor(
         style = Paint.Style.STROKE
     }
     private val darkStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(190, 0, 0, 0)
-        strokeWidth = 5f
+        color = Color.argb(210, 0, 0, 0)
+        strokeWidth = 6f
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
     private val lightStrokePaint = Paint(darkStrokePaint).apply {
-        color = Color.argb(210, 255, 255, 255)
+        color = Color.argb(205, 255, 255, 255)
+        strokeWidth = 4f
     }
     private val bandwidthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(230, 255, 255, 255)
-        strokeWidth = 2f
+        color = Color.argb(235, 56, 184, 99)
+        strokeWidth = 2.5f
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
     private val latencyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(210, 40, 40, 40)
-        strokeWidth = 2f
+        color = Color.argb(235, 220, 74, 74)
+        strokeWidth = 2.5f
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
@@ -93,7 +95,7 @@ class TrafficMonitorView @JvmOverloads constructor(
         synchronized(lock) {
             rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
             currentBytes += byteCount.toLong()
-            bandwidthMbps[BUCKET_COUNT - 1] = bytesToMegabits(currentBytes)
+            bandwidthBitsPerSecond[BUCKET_COUNT - 1] = bytesToBits(currentBytes)
         }
         postInvalidate()
     }
@@ -124,7 +126,7 @@ class TrafficMonitorView @JvmOverloads constructor(
 
         val snapshots = synchronized(lock) {
             rotateToSecond(SystemClock.elapsedRealtime() / MILLIS_PER_SECOND)
-            bandwidthMbps.copyOf() to latencyMs.copyOf()
+            bandwidthBitsPerSecond.copyOf() to latencyMs.copyOf()
         }
         val bandwidthSnapshot = snapshots.first
         val latencySnapshot = snapshots.second
@@ -138,7 +140,7 @@ class TrafficMonitorView @JvmOverloads constructor(
 
         drawTextWithOutline(
             canvas,
-            "Media ${formatMbps(bandwidthSnapshot.last())} Mb/s",
+            "Media ${formatBitsPerSecond(bandwidthSnapshot.last())}",
             padding,
             topText
         )
@@ -150,8 +152,8 @@ class TrafficMonitorView @JvmOverloads constructor(
         )
 
         drawGrid(canvas)
-        drawSeries(canvas, bandwidthSnapshot, max(1f, bandwidthSnapshot.maxOrNull() ?: 1f), bandwidthPaint, darkStrokePaint)
-        drawSeries(canvas, latencySnapshot, max(50f, latencySnapshot.maxOrNull() ?: 50f), latencyPaint, lightStrokePaint)
+        drawSeries(canvas, bandwidthSnapshot, max(1f, bandwidthSnapshot.maxOrNull() ?: 1f), bandwidthPaint)
+        drawSeries(canvas, latencySnapshot, max(50f, latencySnapshot.maxOrNull() ?: 50f), latencyPaint)
     }
 
     private fun drawGrid(canvas: Canvas) {
@@ -162,7 +164,7 @@ class TrafficMonitorView @JvmOverloads constructor(
         canvas.drawLine(graphRect.left, graphRect.bottom, graphRect.right, graphRect.bottom, gridPaint)
     }
 
-    private fun drawSeries(canvas: Canvas, values: FloatArray, maxValue: Float, paint: Paint, outlinePaint: Paint) {
+    private fun drawSeries(canvas: Canvas, values: FloatArray, maxValue: Float, paint: Paint) {
         linePath.reset()
         values.forEachIndexed { index, value ->
             val x = graphRect.left + graphRect.width() * index / (BUCKET_COUNT - 1)
@@ -173,7 +175,8 @@ class TrafficMonitorView @JvmOverloads constructor(
                 linePath.lineTo(x, y)
             }
         }
-        canvas.drawPath(linePath, outlinePaint)
+        canvas.drawPath(linePath, darkStrokePaint)
+        canvas.drawPath(linePath, lightStrokePaint)
         canvas.drawPath(linePath, paint)
     }
 
@@ -200,7 +203,7 @@ class TrafficMonitorView @JvmOverloads constructor(
 
         val shifts = elapsedSeconds.coerceAtMost(BUCKET_COUNT.toLong()).toInt()
         repeat(shifts) {
-            shiftLeft(bandwidthMbps)
+            shiftLeft(bandwidthBitsPerSecond)
             shiftLeft(latencyMs)
         }
         currentSecond = second
@@ -216,15 +219,32 @@ class TrafficMonitorView @JvmOverloads constructor(
         values[values.lastIndex] = 0f
     }
 
-    private fun bytesToMegabits(bytes: Long): Float = bytes * BITS_PER_BYTE / MEGABIT
+    private fun bytesToBits(bytes: Long): Float = bytes * BITS_PER_BYTE
 
-    private fun formatMbps(value: Float): String = String.format("%.1f", value)
+    private fun formatBitsPerSecond(value: Float): String {
+        val absoluteValue = value.absoluteValue
+        return when {
+            absoluteValue < KILOBIT -> "${value.toInt()} b/s"
+            absoluteValue < MEGABIT -> "${formatScaledValue(value / KILOBIT)} kb/s"
+            else -> "${formatScaledValue(value / MEGABIT)} Mb/s"
+        }
+    }
+
+    private fun formatScaledValue(value: Float): String {
+        val absoluteValue = value.absoluteValue
+        return if (absoluteValue >= 100f) {
+            String.format("%.0f", value)
+        } else {
+            String.format("%.1f", value)
+        }
+    }
 
     companion object {
         private const val BUCKET_COUNT = 30
         private const val TICK_MS = 1_000L
         private const val MILLIS_PER_SECOND = 1_000L
         private const val BITS_PER_BYTE = 8f
+        private const val KILOBIT = 1_000f
         private const val MEGABIT = 1_000_000f
     }
 }

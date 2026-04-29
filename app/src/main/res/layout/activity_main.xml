@@ -85,7 +85,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:textColor="#E6FFFFFF"
+            android:textColor="#FF7DB7FF"
             android:textSize="13sp" />
 
         <ProgressBar
@@ -96,16 +96,16 @@
             android:layout_marginTop="4dp"
             android:max="100"
             android:progress="100"
-            android:progressTint="#E6FFFFFF"
+            android:progressTint="#FF7DB7FF"
             android:progressBackgroundTint="#4DFFFFFF" />
     </LinearLayout>
 
     <LinearLayout
         android:id="@+id/audio_volume_overlay"
-        android:layout_width="220dp"
-        android:layout_height="wrap_content"
+        android:layout_width="72dp"
+        android:layout_height="228dp"
         android:layout_gravity="center|end"
-        android:layout_marginEnd="32dp"
+        android:layout_marginEnd="20dp"
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:padding="8dp"
@@ -119,19 +119,26 @@
             android:shadowDx="0"
             android:shadowDy="0"
             android:shadowRadius="3"
-            android:textColor="#FFFFFFFF"
+            android:textColor="#FF7DB7FF"
             android:textSize="14sp" />
 
-        <ProgressBar
-            android:id="@+id/audio_volume_overlay_bar"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="200dp"
-            android:layout_height="8dp"
-            android:layout_marginTop="6dp"
-            android:max="100"
-            android:progress="100"
-            android:progressTint="#E6FFFFFF"
-            android:progressBackgroundTint="#66000000" />
+        <FrameLayout
+            android:layout_width="48dp"
+            android:layout_height="176dp"
+            android:layout_marginTop="8dp">
+
+            <ProgressBar
+                android:id="@+id/audio_volume_overlay_bar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="164dp"
+                android:layout_height="10dp"
+                android:layout_gravity="center"
+                android:max="100"
+                android:progress="100"
+                android:progressBackgroundTint="#99000000"
+                android:progressTint="#FF7DB7FF"
+                android:rotation="-90" />
+        </FrameLayout>
     </LinearLayout>
 
     <io.carmo.airplay.receiver.TrafficMonitorView
