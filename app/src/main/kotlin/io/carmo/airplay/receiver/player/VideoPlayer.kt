@@ -195,8 +195,8 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 4
-        private const val MAX_QUEUED_FRAMES = 3
+        private const val MAX_BUFFERED_FRAMES = 2
+        private const val MAX_QUEUED_FRAMES = 1
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_WIDTH = 1280
         private const val VIDEO_HEIGHT = 720

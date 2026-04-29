@@ -70,7 +70,7 @@ When the native RAOP connection receives `TEARDOWN`, or a connection is destroye
 
 `VideoPlayer` is a dedicated thread around Android `MediaCodec`. It uses a small fixed-size queue capped at 2 frames and trims pending input to the newest frame so stale frames are dropped instead of allowing latency to grow without limit. It also drains decoder output and renders only the newest waiting output frame. On the ThinkSmart View target it configures H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream.
 
-`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback now favors continuity over minimum latency: it uses a larger platform buffer and blocking writes, with PCM packets capped at 16 queued packets and trimmed to 12 pending packets.
+`AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback now favors continuity over minimum latency: it prebuffers 12 packets before starting, uses a larger platform buffer and blocking writes, and caps PCM packets at 64 queued packets while trimming to 48 pending packets.
 
 Both playback threads are deliberately small. They do not own Android UI objects other than the render surface, do not perform per-frame logging in normal builds, and do not retain unbounded packet history.
 

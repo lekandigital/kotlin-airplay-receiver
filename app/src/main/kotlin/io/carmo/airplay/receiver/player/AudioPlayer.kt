@@ -18,8 +18,9 @@ class AudioPlayer(
 
     private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
     @Volatile private var volume = initialVolume.coerceIn(MIN_VOLUME, MAX_VOLUME)
-    private var track: AudioTrack? = createAudioTrack().also { it.play() }
+    private var track: AudioTrack? = createAudioTrack()
     @Volatile private var isStopped = false
+    private var hasStartedPlayback = false
 
     fun addPacket(packet: PCMPacket) {
         trimBacklog()
@@ -40,6 +41,10 @@ class AudioPlayer(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         while (!isStopped) {
             try {
+                if (!hasStartedPlayback && packets.size < PREBUFFER_PACKETS) {
+                    Thread.sleep(PREBUFFER_WAIT_MS)
+                    continue
+                }
                 packets.poll(250, TimeUnit.MILLISECONDS)?.let(::play)
             } catch (e: InterruptedException) {
                 if (isStopped) {
@@ -55,7 +60,9 @@ class AudioPlayer(
         drainPackets()
         track?.run {
             flush()
-            stop()
+            if (playState == AudioTrack.PLAYSTATE_PLAYING) {
+                stop()
+            }
             release()
         }
         track = null
@@ -66,6 +73,10 @@ class AudioPlayer(
             packet.data.position(0)
             packet.data.limit(packet.size)
             track?.setVolume(volume)
+            if (!hasStartedPlayback) {
+                track?.play()
+                hasStartedPlayback = true
+            }
             track?.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING)
             onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
         } finally {
@@ -125,9 +136,11 @@ class AudioPlayer(
         private const val DEFAULT_VOLUME = 1.0f
         private const val MIN_VOLUME = 0.0f
         private const val MAX_VOLUME = 1.0f
-        private const val MAX_BUFFERED_PACKETS = 16
-        private const val MAX_QUEUED_PACKETS = 12
-        private const val AUDIO_BUFFER_MULTIPLIER = 4
+        private const val MAX_BUFFERED_PACKETS = 64
+        private const val MAX_QUEUED_PACKETS = 48
+        private const val PREBUFFER_PACKETS = 12
+        private const val PREBUFFER_WAIT_MS = 10L
+        private const val AUDIO_BUFFER_MULTIPLIER = 8
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT

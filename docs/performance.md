@@ -62,7 +62,7 @@ Receiver prefers dropping stale media over building delay:
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.
-- Audio uses a fixed-size `ArrayBlockingQueue` capped at 16 PCM packets and trims backlog to 12 pending packets before enqueueing.
+- Audio uses a fixed-size `ArrayBlockingQueue` capped at 64 PCM packets, prebuffers 12 packets before playback starts, and trims backlog to 48 pending packets before enqueueing.
 - The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.
 - Playback threads request Android's urgent display/audio thread priorities.
 - The H.264 decoder is configured with API 27-compatible priority and operating-rate hints.
