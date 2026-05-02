@@ -21,6 +21,7 @@ class DNSNotify(context: Context) {
 
     fun registerAirplay(port: Int) {
         Log.d(TAG, "registerAirplay port = $port, macAddress = $macAddress")
+        airplayRegister?.stop()
         val txtRecord = TXTRecord().apply {
             set("deviceid", macAddress)
             set("features", "0x5A7FFFF7,0x1E")

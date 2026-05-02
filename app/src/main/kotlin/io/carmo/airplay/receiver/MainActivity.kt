@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -44,6 +45,7 @@ class MainActivity : Activity() {
     private lateinit var audioManager: AudioManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var videoMode = VideoMode.HD
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
     private var acceptAudio = true
@@ -121,6 +123,7 @@ class MainActivity : Activity() {
         }
         if (isStarted) {
             applyWakeMode()
+            refreshAnnouncements()
         }
         if (::startupPanel.isInitialized && !isStreaming) {
             updateWaitingStatus()
@@ -601,6 +604,7 @@ class MainActivity : Activity() {
         }
 
         startReceiverForegroundService()
+        acquireMulticastLock()
         airPlayServer.startServer()
         val airplayPort = airPlayServer.port
         if (airplayPort == 0) {
@@ -620,6 +624,38 @@ class MainActivity : Activity() {
         isStarted = true
         applyWakeMode()
         Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
+    }
+
+    private fun refreshAnnouncements() {
+        acquireMulticastLock()
+        val airplayPort = airPlayServer.port
+        if (airplayPort != 0) {
+            dnsNotify.registerAirplay(airplayPort)
+        }
+        val raopPort = raopServer.port
+        if (raopPort != 0) {
+            dnsNotify.registerRaop(raopPort, acceptAudio)
+        }
+    }
+
+    private fun acquireMulticastLock() {
+        val lock = multicastLock ?: run {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiManager.createMulticastLock("$packageName:$MULTICAST_LOCK_TAG").apply {
+                setReferenceCounted(false)
+                multicastLock = this
+            }
+        }
+        if (!lock.isHeld) {
+            lock.acquire()
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        val lock = multicastLock
+        if (lock?.isHeld == true) {
+            lock.release()
+        }
     }
 
     private fun showControl(control: View) {
@@ -652,6 +688,7 @@ class MainActivity : Activity() {
         lastWakeNudgeAtMs = 0L
         allowScreenSaver()
         releaseWakeNudgeLock()
+        releaseMulticastLock()
         stopReceiverForegroundService()
     }
 
@@ -686,6 +723,7 @@ class MainActivity : Activity() {
         private const val TAG = "Receiver"
         private const val WAKE_LOCK_TAG = "ReceiverActive"
         private const val WAKE_NUDGE_LOCK_TAG = "ReceiverActivity"
+        private const val MULTICAST_LOCK_TAG = "ReceiverDiscovery"
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
         private const val CONTROL_OVERLAY_ELEVATION_DP = 24f
