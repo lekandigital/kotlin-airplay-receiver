@@ -64,7 +64,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only once a valid rendering surface exists.
 
-For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS NAL units and reports those as major visual activity. It also reports the first video packet after a short idle period as major activity. Those events are used only by the `Wake on activity` display policy. `VideoPlayer` preserves codec configuration and frame dependency order; if the small queue overflows, it drops the pending backlog and waits for the next IDR frame instead of feeding the decoder later P-frames whose references were discarded.
+For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS NAL units and reports those as major visual activity. It also reports the first video packet after a short idle period as major activity. Those events are used only by the `Wake on activity` display policy. `VideoPlayer` preserves codec configuration and frame dependency order. If the small queue is full, it waits briefly for decoder space; if a dependent frame still cannot be queued, Receiver keeps the already queued dependency chain, drops the overflow frame, and waits for the next IDR frame instead of feeding the decoder later P-frames whose references were discarded.
 
 For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
 

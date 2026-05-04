@@ -195,18 +195,29 @@ class VideoPlayer(
     }
 
     private fun enqueueVideoPacket(packet: NALPacket) {
-        if (packets.offer(packet)) {
+        if (offerPacket(packet)) {
             return
         }
-        drainPendingVideoFrames()
-        isWaitingForKeyFrame = true
+
         if (packet.isKeyFrame) {
+            drainPendingVideoFrames()
             isWaitingForKeyFrame = false
-            if (!packets.offer(packet)) {
+            if (!offerPacket(packet)) {
                 packet.release()
             }
-        } else {
-            packet.release()
+            return
+        }
+
+        isWaitingForKeyFrame = true
+        packet.release()
+    }
+
+    private fun offerPacket(packet: NALPacket): Boolean {
+        return try {
+            packets.offer(packet, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         }
     }
 
@@ -259,8 +270,9 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 8
+        private const val MAX_BUFFERED_FRAMES = 12
         private const val STARTUP_RENDER_DROP_FRAMES = 4
+        private const val QUEUE_OFFER_TIMEOUT_MS = 5L
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val INPUT_TIMEOUT_USEC = 10_000L
