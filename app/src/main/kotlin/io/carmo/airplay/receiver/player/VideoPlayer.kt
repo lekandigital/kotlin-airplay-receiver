@@ -27,8 +27,6 @@ class VideoPlayer(
     @Volatile private var hasCodecConfig = false
     @Volatile private var isWaitingForKeyFrame = true
     @Volatile private var hasRenderedFirstFrame = false
-    private var shouldDropStartupFrames = true
-    private var pendingStartupDropFrames = 0
 
     // Diagnostic flags — log critical lifecycle events exactly once per player.
     private var hasLoggedConfigQueued = false
@@ -133,65 +131,67 @@ class VideoPlayer(
         }
 
         try {
-            // Pre-drain any output that's already cooked. Use 0 timeout — we
-            // poll-only here so we never block the input side of the pipeline.
+            // Drain any output that's already cooked. Use 0 timeout — we
+            // poll-only here so we never block the input side.
             if (drainOutput(codec, 0L)) {
                 signalFrameRendered()
             }
 
-            // Reject oversized NAL up-front. We MUST NOT pass it to the decoder
-            // in any form: queueing a zero-byte non-config buffer corrupts the
-            // decoder state machine, and queueing it with the CODEC_CONFIG flag
-            // would replace SPS/PPS with garbage. Just drop the packet and ask
-            // for a fresh keyframe via the existing discontinuity machinery.
-            val capacityProbeIndex = codec.dequeueInputBuffer(0L)
-            if (capacityProbeIndex >= 0) {
-                val probeBuffer = codec.getInputBuffer(capacityProbeIndex)
-                if (probeBuffer != null && packet.size > probeBuffer.capacity()) {
-                    Log.w(TAG, "NAL too large for decoder input buffer (size=${packet.size}, capacity=${probeBuffer.capacity()}); requesting keyframe")
-                    // Send a harmless empty CODEC_CONFIG with our cached PTS to
-                    // free the slot without poisoning state. Then mark a real
-                    // discontinuity so we wait for the next IDR.
-                    codec.queueInputBuffer(capacityProbeIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
-                    markInputDiscontinuity(packet)
-                    return
+            // Wait briefly for an input slot. If none is free we DO NOT trash
+            // codec config state — we just drop this one frame and ask for a
+            // fresh keyframe. Resetting hasCodecConfig on transient back-pressure
+            // (the previous behavior) used to wedge the decoder permanently.
+            val inputBufferIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_USEC)
+            if (inputBufferIndex < 0) {
+                if (DEBUG_FRAMES) {
+                    Log.d(TAG, "dequeueInputBuffer timed out")
                 }
-                queueIntoBuffer(codec, capacityProbeIndex, packet)
-            } else {
-                // Back-pressure: decoder has no free input slot right now.
-                // Wait for one — but DO NOT drop the packet or reset codec
-                // config state on timeout. Doing so used to wedge the player
-                // permanently if the surface stalled briefly at startup.
-                val deadlineNs = System.nanoTime() + INPUT_WAIT_BUDGET_NS
-                var inputIndex = -1
-                while (!isStopped && System.nanoTime() < deadlineNs) {
-                    inputIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_USEC)
-                    if (inputIndex >= 0) break
-                    // Drain output while we wait — this is what frees input slots.
-                    if (drainOutput(codec, 0L)) {
-                        signalFrameRendered()
-                    }
+                if (!packet.isCodecConfig) {
+                    isWaitingForKeyFrame = true
                 }
-                if (inputIndex < 0) {
-                    // Still no slot. For non-config frames we must drop and ask
-                    // for a keyframe (skipping a P-frame breaks the GOP). For
-                    // config we keep the cache — it'll be re-applied on the
-                    // next keyframe by the state machine.
-                    if (!packet.isCodecConfig) {
-                        Log.w(TAG, "input back-pressure exceeded ${INPUT_WAIT_BUDGET_NS / 1_000_000}ms; dropping ${if (packet.isKeyFrame) "IDR" else "P"} frame")
-                        isWaitingForKeyFrame = true
-                    } else {
-                        Log.w(TAG, "input back-pressure on codec config; will retry on next config push")
-                    }
-                    return
-                }
-                queueIntoBuffer(codec, inputIndex, packet)
+                return
             }
 
-            if (!packet.isCodecConfig) {
-                // After warm-up keep the post-queue wait short to minimise
-                // end-to-end latency. During warm-up wait a bit longer so the
-                // first IDR has a chance to surface a frame on this same tick.
+            val inputBuffer = codec.getInputBuffer(inputBufferIndex)
+            if (inputBuffer == null || packet.size > inputBuffer.capacity()) {
+                if (DEBUG_FRAMES) {
+                    Log.d(TAG, "dropping oversized NAL: size=${packet.size}, capacity=${inputBuffer?.capacity()}")
+                }
+                // Free the slot WITHOUT a CODEC_CONFIG flag (we don't have config
+                // bytes to give it). Empty submission is the cleanest way to
+                // release the input buffer back to the codec.
+                codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, 0)
+                if (!packet.isCodecConfig) {
+                    isWaitingForKeyFrame = true
+                }
+                return
+            }
+
+            inputBuffer.clear()
+            packet.data.position(0)
+            packet.data.limit(packet.size)
+            inputBuffer.put(packet.data)
+            codec.queueInputBuffer(
+                inputBufferIndex,
+                0,
+                packet.size,
+                packet.presentationTimeUs,
+                packet.codecFlags
+            )
+
+            if (packet.isCodecConfig) {
+                if (!hasLoggedConfigQueued) {
+                    Log.i(TAG, "queued codec config (SPS/PPS, size=${packet.size}) into MediaCodec")
+                    hasLoggedConfigQueued = true
+                }
+            } else {
+                if (packet.isKeyFrame && !hasLoggedKeyFrameQueued) {
+                    Log.i(TAG, "queued first IDR (size=${packet.size}, pts=${packet.presentationTimeUs}us)")
+                    hasLoggedKeyFrameQueued = true
+                }
+                // Drain output. Use a longer wait until we've rendered something
+                // (helps surface the very first frame promptly), then drop to 0
+                // for steady-state low latency.
                 val outputWait = if (hasRenderedFirstFrame) STEADY_OUTPUT_TIMEOUT_USEC else WARMUP_OUTPUT_TIMEOUT_USEC
                 if (drainOutput(codec, outputWait)) {
                     signalFrameRendered()
@@ -206,38 +206,6 @@ class VideoPlayer(
         } finally {
             packet.release()
         }
-    }
-
-    private fun queueIntoBuffer(codec: MediaCodec, inputBufferIndex: Int, packet: NALPacket) {
-        val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-        if (inputBuffer == null) {
-            // Shouldn't happen for a freshly-dequeued slot, but free it cleanly.
-            codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
-            return
-        }
-
-        inputBuffer.clear()
-        packet.data.position(0)
-        packet.data.limit(packet.size)
-        inputBuffer.put(packet.data)
-
-        if (packet.isCodecConfig) {
-            shouldDropStartupFrames = true
-            if (!hasLoggedConfigQueued) {
-                Log.i(TAG, "queued codec config (SPS/PPS, size=${packet.size}) into MediaCodec")
-                hasLoggedConfigQueued = true
-            }
-        } else if (packet.isKeyFrame) {
-            if (shouldDropStartupFrames) {
-                pendingStartupDropFrames = STARTUP_RENDER_DROP_FRAMES
-                shouldDropStartupFrames = false
-            }
-            if (!hasLoggedKeyFrameQueued) {
-                Log.i(TAG, "queued first IDR (size=${packet.size}, pts=${packet.presentationTimeUs}us)")
-                hasLoggedKeyFrameQueued = true
-            }
-        }
-        codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.presentationTimeUs, packet.codecFlags)
     }
 
     private fun signalFrameRendered() {
@@ -275,11 +243,6 @@ class VideoPlayer(
         }
 
         if (pendingRenderIndex >= 0) {
-            if (pendingStartupDropFrames > 0) {
-                pendingStartupDropFrames--
-                codec.releaseOutputBuffer(pendingRenderIndex, false)
-                return false
-            }
             codec.releaseOutputBuffer(pendingRenderIndex, true)
             return true
         }
@@ -329,17 +292,6 @@ class VideoPlayer(
         retainedConfig.forEach { packets.offer(it) }
     }
 
-    private fun markInputDiscontinuity(packet: NALPacket) {
-        if (packet.isCodecConfig) {
-            hasCodecConfig = false
-        }
-        isWaitingForKeyFrame = true
-        shouldDropStartupFrames = true
-        synchronized(packets) {
-            drainPendingVideoFrames()
-        }
-    }
-
     private fun drainPackets() {
         while (true) {
             packets.poll()?.release() ?: break
@@ -362,21 +314,15 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        // Keep the ingest queue small so we stay close to live. 8 frames at
-        // 60fps = ~133ms worst-case, but in practice it sits near-empty once
-        // the decoder is warm.
-        private const val MAX_BUFFERED_FRAMES = 8
-        private const val STARTUP_RENDER_DROP_FRAMES = 4
+        // Small queue keeps us close to live. The 0.2.12 tip used 2; we allow
+        // a little more headroom for momentary jitter.
+        private const val MAX_BUFFERED_FRAMES = 4
         private const val QUEUE_OFFER_TIMEOUT_MS = 5L
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
-        private const val INPUT_TIMEOUT_USEC = 5_000L
-        // Total time we'll spin waiting for an input buffer before declaring
-        // back-pressure and asking for a fresh IDR. 80ms ≈ 5 frames at 60fps.
-        private const val INPUT_WAIT_BUDGET_NS = 80_000_000L
-        // Output drain wait: longer during warm-up so the very first IDR has a
-        // chance to surface a frame in the same loop iteration; very short
-        // afterwards to minimise added latency.
+        private const val INPUT_TIMEOUT_USEC = 10_000L
+        // Output drain wait: a bit longer until the first frame surfaces (so
+        // warm-up doesn't sit idle), then 0 for steady-state low latency.
         private const val WARMUP_OUTPUT_TIMEOUT_USEC = 8_000L
         private const val STEADY_OUTPUT_TIMEOUT_USEC = 0L
 

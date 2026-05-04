@@ -38,7 +38,6 @@ class RaopServer(
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
     @Volatile private var hasStartedVideo = false
-    @Volatile private var startupRenderedFrames = 0
     @Volatile private var streamStopThresholdMs = STREAM_STOP_GRACE_MS
 
     /**
@@ -137,7 +136,6 @@ class RaopServer(
         videoPlayer?.stopDecode()
         videoPlayer = null
         hasStartedVideo = false
-        startupRenderedFrames = 0
     }
 
     fun startServer() {
@@ -163,7 +161,6 @@ class RaopServer(
         lastMediaPacketAtMs = 0L
         hasConnection = false
         hasStartedVideo = false
-        startupRenderedFrames = 0
         firstVideoBytesAtMs = 0L
         cachedCodecConfig = null
     }
@@ -217,6 +214,13 @@ class RaopServer(
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         if (!hasConnection) {
             hasConnection = true
+            // Hide the startup overlay as soon as media starts flowing. This is
+            // the 0.2.12 behavior — the overlay must NOT wait for decoded
+            // frames, because on slower devices (Android 8.1 hardware in
+            // particular) MediaCodec can take noticeable time to surface the
+            // first frame, leaving the user staring at the panel for seconds
+            // even though the stream is healthy.
+            onConnectionStarted()
         }
     }
 
@@ -290,41 +294,34 @@ class RaopServer(
     }
 
     private fun handleVideoFrameRendered() {
+        // Once the overlay has been hidden via markConnected(), there's nothing
+        // for us to do here — but we still get this callback for every rendered
+        // frame, so we keep it cheap. The startup-watchdog cancellation lives
+        // here as belt-and-braces in case it was scheduled.
         if (hasStartedVideo) {
-            return
-        }
-        startupRenderedFrames++
-        if (startupRenderedFrames < STARTUP_VISIBLE_FRAME_COUNT) {
             return
         }
         hasStartedVideo = true
         mainHandler.removeCallbacks(startupWatchdog)
-        onConnectionStarted()
     }
 
     /**
-     * Watchdog that forces the startup overlay to hide if video bytes are
-     * arriving but no frame has actually rendered within a generous window.
-     * Without this, any rendering failure (codec init crash, decoder stuck on
-     * back-pressure, surface stuck behind a system dialog, etc.) leaves the
-     * receiver showing the "waiting" panel forever even though the source is
-     * connected.
+     * Watchdog that is now a pure safety net: in the normal case the overlay
+     * is hidden by [markConnected] on the first media packet, and this never
+     * fires. It exists only to recover from any future regression where
+     * markConnected somehow doesn't run (e.g. all video is silently dropped).
      */
     private val startupWatchdog = Runnable {
         if (hasStartedVideo) {
             return@Runnable
         }
-        // Only force-hide if traffic is genuinely flowing. Otherwise the
-        // panel correctly reflects an idle receiver.
         val trafficAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
         if (lastMediaPacketAtMs == 0L || trafficAgeMs > STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS) {
             return@Runnable
         }
         Log.w(
             TAG,
-            "startup watchdog: ${STARTUP_WATCHDOG_MS}ms elapsed since first video bytes " +
-                "but no frame rendered (renderedFrames=$startupRenderedFrames). " +
-                "Hiding startup overlay so the surface is visible."
+            "startup watchdog: ${STARTUP_WATCHDOG_MS}ms with traffic but no rendered frame; forcing overlay hide."
         )
         hasStartedVideo = true
         onConnectionStarted()
@@ -382,7 +379,6 @@ class RaopServer(
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
-        private const val STARTUP_VISIBLE_FRAME_COUNT = 4
         // If video bytes have been arriving for this long with no rendered
         // frame, give up waiting for onFrameRendered and unblock the UI. The
         // surface will simply show whatever the decoder eventually paints.
