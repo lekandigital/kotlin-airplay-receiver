@@ -39,7 +39,7 @@ class RaopServer(
     @Volatile private var hasConnection = false
     @Volatile private var hasStartedVideo = false
     @Volatile private var startupRenderedFrames = 0
-    @Volatile private var streamStopThresholdMs = MEDIA_IDLE_STOP_MS
+    @Volatile private var streamStopThresholdMs = STREAM_STOP_GRACE_MS
 
     init {
         surfaceView.holder.addCallback(this)
@@ -182,7 +182,6 @@ class RaopServer(
 
     private fun markConnected() {
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
-        scheduleStreamStopCheck(MEDIA_IDLE_STOP_MS)
         if (!hasConnection) {
             hasConnection = true
         }
@@ -305,7 +304,6 @@ class RaopServer(
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val STREAM_STOP_GRACE_MS = 5_000L
-        private const val MEDIA_IDLE_STOP_MS = 20_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val STARTUP_VISIBLE_FRAME_COUNT = 4
         private const val NAL_TYPE_MASK = 0x1F
