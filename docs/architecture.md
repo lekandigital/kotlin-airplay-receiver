@@ -53,7 +53,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration through the bundled DNS-SD bridge. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. Receiver advertises the same two-service shape used by the last known working `0.2.12` line: `_airplay._tcp` points at a lightweight AirPlay announcement socket, while `_raop._tcp` points at the native RAOP control port that owns mirroring setup. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
+`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. Receiver advertises the same two-service shape used by the last NSD-based announcement path before the later churn: `_airplay._tcp` points at a lightweight AirPlay announcement socket, while `_raop._tcp` points at the native RAOP control port that owns mirroring setup. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
@@ -95,7 +95,7 @@ The app links three important native outputs:
 
 - `raop_server`, the JNI bridge
 - `play-lib`, the AirPlay/RAOP implementation
-- `jdns_sd`, the retained DNS-SD JNI bridge used by `DNSNotify` for Bonjour advertisement
+- `jdns_sd`, the retained DNS-SD JNI compatibility bridge; active Bonjour advertisement is handled by Android NSD in `DNSNotify`
 
 The JNI bridge caches callback method IDs once at server startup and reuses thread attachments, avoiding repeated lookup and attach/detach overhead on every audio or video packet. Media callbacks use native-owned direct buffers instead of Java heap arrays; playback releases those buffers after write, decode, or drop.
 

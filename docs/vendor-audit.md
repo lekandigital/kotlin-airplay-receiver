@@ -62,7 +62,7 @@ Removed from the FDK AAC tree:
 
 Path: `app/src/main/cpp/mDNSResponder`
 
-Retained as the runtime Bonjour DNS-SD bridge used by `DNSNotify`.
+Retained as a compatibility bridge while runtime Bonjour service registration is handled by Android NSD.
 
 Retained files:
 
