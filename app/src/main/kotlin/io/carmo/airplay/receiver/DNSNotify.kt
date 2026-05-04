@@ -20,7 +20,7 @@ class DNSNotify(
     val deviceName: String = resolveDeviceName(context)
     private val macAddress: String = NetUtils.localMacAddress()
     private var airplayStatus: String = "AirPlay idle"
-    private var raopStatus: String = "RAOP idle"
+    private var raopStatus: String = "RAOP discovery off"
 
     fun registerAirplay(port: Int) {
         Log.d(TAG, "registerAirplay port = $port, macAddress = $macAddress")

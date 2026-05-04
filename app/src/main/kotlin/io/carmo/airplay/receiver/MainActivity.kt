@@ -8,6 +8,8 @@ import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
@@ -43,6 +45,7 @@ class MainActivity : Activity() {
     private lateinit var audioVolumeOverlayBar: ProgressBar
     private lateinit var trafficMonitor: TrafficMonitorView
     private lateinit var audioManager: AudioManager
+    private val discoveryRetryHandler = Handler(Looper.getMainLooper())
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
@@ -61,6 +64,7 @@ class MainActivity : Activity() {
     private var isStarted = false
     private var isStreaming = false
     private var discoveryStatus = "Discovery starting"
+    private var discoveryRetryCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -378,12 +382,6 @@ class MainActivity : Activity() {
             acceptAudio = isChecked
             saveAcceptAudio(isChecked)
             raopServer.setAcceptAudio(isChecked)
-            if (isStarted) {
-                val port = raopServer.port
-                if (port != 0) {
-                    dnsNotify.registerRaop(port, isChecked)
-                }
-            }
             updateAudioVolumeUi()
         }
         updateAudioVolumeUi()
@@ -617,26 +615,43 @@ class MainActivity : Activity() {
         startReceiverForegroundService()
         acquireMulticastLock()
         raopServer.startServer()
-        val raopPort = raopServer.port
-        if (raopPort == 0) {
-            Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
-        } else {
-            dnsNotify.registerAirplay(raopPort)
-            dnsNotify.registerRaop(raopPort, acceptAudio)
-        }
+        publishAirPlayAnnouncement(resetRetry = true)
 
         isStarted = true
         applyWakeMode()
-        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, controlPort = $raopPort")
+        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, controlPort = ${raopServer.port}")
     }
 
     private fun refreshAnnouncements() {
         acquireMulticastLock()
+        publishAirPlayAnnouncement(resetRetry = true)
+    }
+
+    private fun publishAirPlayAnnouncement(resetRetry: Boolean) {
+        if (resetRetry) {
+            discoveryRetryCount = 0
+            discoveryRetryHandler.removeCallbacks(publishAirPlayAnnouncementRetry)
+        }
+
         val raopPort = raopServer.port
         if (raopPort != 0) {
             dnsNotify.registerAirplay(raopPort)
-            dnsNotify.registerRaop(raopPort, acceptAudio)
+            return
         }
+
+        if (discoveryRetryCount >= DISCOVERY_MAX_RETRIES) {
+            handleDiscoveryStatus("AirPlay failed: control port unavailable")
+            Toast.makeText(applicationContext, "Start the receiver service failed", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        discoveryRetryCount++
+        handleDiscoveryStatus("AirPlay waiting for control port")
+        discoveryRetryHandler.postDelayed(publishAirPlayAnnouncementRetry, DISCOVERY_RETRY_DELAY_MS)
+    }
+
+    private val publishAirPlayAnnouncementRetry = Runnable {
+        publishAirPlayAnnouncement(resetRetry = false)
     }
 
     private fun acquireMulticastLock() {
@@ -683,6 +698,7 @@ class MainActivity : Activity() {
             return
         }
         dnsNotify.stop()
+        discoveryRetryHandler.removeCallbacks(publishAirPlayAnnouncementRetry)
         raopServer.stopServer()
         isStarted = false
         lastWakeNudgeAtMs = 0L
@@ -726,6 +742,8 @@ class MainActivity : Activity() {
         private const val MULTICAST_LOCK_TAG = "ReceiverDiscovery"
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
+        private const val DISCOVERY_RETRY_DELAY_MS = 500L
+        private const val DISCOVERY_MAX_RETRIES = 10
         private const val CONTROL_OVERLAY_ELEVATION_DP = 24f
         private const val TRAFFIC_GESTURE_EDGE_DP = 96f
         private const val TRAFFIC_GESTURE_DRAG_DP = 48f

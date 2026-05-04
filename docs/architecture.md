@@ -53,7 +53,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements, and both DNS-SD records point to the native RAOP control port so the Mac's first `/info` and pairing probes reach the real protocol handler. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
+`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The AirPlay DNS-SD record points to the native RAOP control port so the Mac's first `/info` and pairing probes reach the real protocol handler. RAOP service discovery is intentionally not published on the same port, avoiding Android 8.1 NSD collisions while keeping the mirroring path discoverable. While active, `MainActivity` holds Android's Wi-Fi multicast lock, retries announcement briefly if the native control port is not ready on the first startup tick, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
@@ -103,7 +103,7 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 
 1. `MainActivity` starts `RaopServer`.
 2. The native RAOP service obtains an ephemeral local control port.
-3. `DNSNotify` publishes `_airplay._tcp` and `_raop._tcp` records on that same control port.
+3. `DNSNotify` publishes `_airplay._tcp` on that control port.
 4. The advertised service name is based on the device name, so AirPlay clients see the ThinkSmart View by its configured Android name.
 
 ## Video Flow
