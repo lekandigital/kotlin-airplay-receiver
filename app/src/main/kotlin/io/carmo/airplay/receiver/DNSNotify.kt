@@ -24,34 +24,29 @@ class DNSNotify(
 
     fun registerAirplay(port: Int) {
         Log.d(TAG, "registerAirplay port = $port, macAddress = $macAddress")
+        val attributes = mapOf(
+            "deviceid" to macAddress,
+            "features" to "0x5A7FFFF7,0x1E",
+            "srcvers" to "220.68",
+            "flags" to "0x4",
+            "vv" to "2",
+            "model" to "AppleTV2,1",
+            "pw" to "false",
+            "rhd" to "5.6.0.0",
+            "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
+            "pi" to "2e388006-13ba-4041-9a67-25dd4a43d536"
+        )
+        val serviceType = "_airplay._tcp."
+        if (airplayRegister?.matches(deviceName, serviceType, port, attributes) == true) {
+            return
+        }
         airplayRegister?.stop()
         updateRegistrationStatus(AIRPLAY_LABEL, "AirPlay announcing on port $port")
-        airplayRegister = NsdRegister(
-            nsdManager,
-            deviceName,
-            "_airplay._tcp.",
-            port,
-            mapOf(
-                "deviceid" to macAddress,
-                "features" to "0x5A7FFFF7,0x1E",
-                "srcvers" to "220.68",
-                "flags" to "0x4",
-                "vv" to "2",
-                "model" to "AppleTV2,1",
-                "pw" to "false",
-                "rhd" to "5.6.0.0",
-                "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
-                "pi" to "2e388006-13ba-4041-9a67-25dd4a43d536"
-            ),
-            AIRPLAY_LABEL,
-            ::updateRegistrationStatus
-        )
+        airplayRegister = NsdRegister(nsdManager, deviceName, serviceType, port, attributes, AIRPLAY_LABEL, ::updateRegistrationStatus)
     }
 
     fun registerRaop(port: Int, acceptAudio: Boolean) {
         Log.d(TAG, "registerRaop port = $port, acceptAudio = $acceptAudio")
-        raopRegister?.stop()
-        updateRegistrationStatus(RAOP_LABEL, "RAOP announcing on port $port")
         val attributes = mutableMapOf(
             "da" to acceptAudio.toString(),
             "et" to "0,3,5",
@@ -75,15 +70,14 @@ class DNSNotify(
             attributes["sr"] = "44100"
             attributes["ss"] = "16"
         }
-        raopRegister = NsdRegister(
-            nsdManager,
-            raopServiceName(),
-            "_raop._tcp.",
-            port,
-            attributes,
-            RAOP_LABEL,
-            ::updateRegistrationStatus
-        )
+        val serviceName = raopServiceName()
+        val serviceType = "_raop._tcp."
+        if (raopRegister?.matches(serviceName, serviceType, port, attributes) == true) {
+            return
+        }
+        raopRegister?.stop()
+        updateRegistrationStatus(RAOP_LABEL, "RAOP announcing on port $port")
+        raopRegister = NsdRegister(nsdManager, serviceName, serviceType, port, attributes, RAOP_LABEL, ::updateRegistrationStatus)
     }
 
     private fun raopServiceName(): String {
@@ -115,9 +109,9 @@ class DNSNotify(
 
     private class NsdRegister(
         private val nsdManager: NsdManager,
-        serviceName: String,
-        serviceType: String,
-        port: Int,
+        private val serviceName: String,
+        private val serviceType: String,
+        private val port: Int,
         private val attributes: Map<String, String>,
         private val label: String,
         private val onStatusChanged: (String, String) -> Unit
@@ -125,12 +119,16 @@ class DNSNotify(
         private val lock = ReentrantLock()
         private var isStopped = false
         private var isRegistered = false
+        private var hasFailed = false
 
         init {
+            val registrationServiceName = serviceName
+            val registrationServiceType = serviceType
+            val registrationPort = port
             val serviceInfo = NsdServiceInfo().apply {
-                this.serviceName = serviceName
-                this.serviceType = serviceType
-                this.port = port
+                this.serviceName = registrationServiceName
+                this.serviceType = registrationServiceType
+                this.port = registrationPort
             }
             attributes.forEach { (key, value) ->
                 serviceInfo.setAttribute(key, value)
@@ -165,6 +163,12 @@ class DNSNotify(
 
         override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
             Log.e(TAG, "$label registration failed: $errorCode")
+            lock.lock()
+            try {
+                hasFailed = true
+            } finally {
+                lock.unlock()
+            }
             if (!isStopped) {
                 onStatusChanged(label, "$label failed: $errorCode")
             }
@@ -194,6 +198,20 @@ class DNSNotify(
                 }
             } catch (e: IllegalArgumentException) {
                 Log.w(TAG, "$label was already unregistered")
+            } finally {
+                lock.unlock()
+            }
+        }
+
+        fun matches(serviceName: String, serviceType: String, port: Int, attributes: Map<String, String>): Boolean {
+            lock.lock()
+            try {
+                return !isStopped &&
+                    !hasFailed &&
+                    this.serviceName == serviceName &&
+                    this.serviceType == serviceType &&
+                    this.port == port &&
+                    this.attributes == attributes
             } finally {
                 lock.unlock()
             }

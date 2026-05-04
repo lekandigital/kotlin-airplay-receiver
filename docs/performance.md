@@ -44,6 +44,8 @@ Receiver exits on explicit stream teardown, or when the mirror media socket clos
 
 Native mirror sessions are kept in a small active-session registry after RTSP control reconnects. This lets Receiver keep a constant stream alive while still joining mirror and timing threads during teardown, and caps malformed mirror payload sizes before they can grow native buffers unexpectedly.
 
+DNS-SD refreshes are idempotent. Launch and resume can both request announcements, but identical AirPlay and RAOP registrations are kept in place instead of being torn down and recreated while Android NSD callbacks are still pending.
+
 ## Display And Decode
 
 The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver defaults to 720p mode, configures the decoder for 1280x720, and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
