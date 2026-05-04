@@ -55,7 +55,7 @@ The local Gradle wrapper is kept only so Actions can run a reproducible build fr
 ## Project Layout
 
 - `app/src/main/kotlin/io/carmo/airplay/receiver/` contains the Kotlin application code.
-- `app/src/main/java/com/apple/dnssd/` contains the Java DNS-SD compatibility bindings used for Bonjour registration.
+- `app/src/main/java/com/apple/dnssd/` contains legacy Java DNS-SD compatibility bindings; runtime Bonjour advertisement now uses Android NSD.
 - `app/src/main/cpp/` contains the native AirPlay, RAOP, mirroring, AAC, crypto, and JNI code.
 - `docs/architecture.md` documents the runtime architecture and data flow.
 - `docs/performance.md` documents the Android 8.1 performance assumptions and tuning decisions.

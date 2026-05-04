@@ -54,7 +54,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements. While active, `MainActivity` holds Android's Wi-Fi multicast lock and refreshes DNS-SD registrations on resume so Bonjour packets are not filtered by the device Wi-Fi stack.
+`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
 
 `AirPlayServer` is a minimal TCP listener used to provide the AirPlay service port that gets advertised through DNS-SD.
 
@@ -90,15 +90,15 @@ The native code under `app/src/main/cpp` does the protocol-heavy work:
 - AAC decoding through the bundled FDK AAC library
 - H.264 mirroring payload handling
 - JNI callbacks into `RaopServer`
-- DNS-SD JNI support through the trimmed `mDNSResponder` build
+- Legacy DNS-SD JNI compatibility through the trimmed `mDNSResponder` build
 
-Vendored native trees are intentionally pruned. Receiver keeps the Android build inputs needed for playback and discovery, plus required license notices, and removes unused upstream samples, documentation, platform projects, tests, encoder examples, and non-CMake build files. See `docs/vendor-audit.md` for the retained/removal breakdown.
+Vendored native trees are intentionally pruned. Receiver keeps the Android build inputs needed for playback, plus required license notices and retained compatibility sources, and removes unused upstream samples, documentation, platform projects, tests, encoder examples, and non-CMake build files. See `docs/vendor-audit.md` for the retained/removal breakdown.
 
 The app links three important native outputs:
 
 - `raop_server`, the JNI bridge
 - `play-lib`, the AirPlay/RAOP implementation
-- `jdns_sd`, the DNS-SD JNI bridge
+- `jdns_sd`, the retained DNS-SD JNI compatibility bridge; active Bonjour advertisement is handled by Android NSD in `DNSNotify`
 
 The JNI bridge caches callback method IDs once at server startup and reuses thread attachments, avoiding repeated lookup and attach/detach overhead on every audio or video packet. Media callbacks use native-owned direct buffers instead of Java heap arrays; playback releases those buffers after write, decode, or drop.
 

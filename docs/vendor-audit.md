@@ -62,7 +62,7 @@ Removed from the FDK AAC tree:
 
 Path: `app/src/main/cpp/mDNSResponder`
 
-Retained because the Java DNS-SD wrapper calls into the JNI bridge and client library used for Bonjour service registration.
+Retained as a compatibility bridge while runtime Bonjour service registration is handled by Android NSD.
 
 Retained files:
 

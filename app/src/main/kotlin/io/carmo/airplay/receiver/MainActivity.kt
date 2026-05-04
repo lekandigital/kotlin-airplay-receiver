@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var startupPanel: View
     private lateinit var startupVersionLabel: TextView
     private lateinit var statusView: TextView
+    private lateinit var discoveryStatusView: TextView
     private lateinit var videoModeGroup: RadioGroup
     private lateinit var wakeModeGroup: RadioGroup
     private lateinit var acceptAudioCheckbox: CheckBox
@@ -60,6 +61,7 @@ class MainActivity : Activity() {
     private var isTrafficGestureCandidate = false
     private var isStarted = false
     private var isStreaming = false
+    private var discoveryStatus = "Discovery starting"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,6 +72,7 @@ class MainActivity : Activity() {
         startupPanel = findViewById(R.id.startup_panel)
         startupVersionLabel = findViewById(R.id.startup_version_label)
         statusView = findViewById(R.id.status)
+        discoveryStatusView = findViewById(R.id.discovery_status)
         videoModeGroup = findViewById(R.id.video_mode_group)
         wakeModeGroup = findViewById(R.id.wake_mode_group)
         acceptAudioCheckbox = findViewById(R.id.accept_audio)
@@ -100,7 +103,7 @@ class MainActivity : Activity() {
             acceptAudio,
             audioVolume
         )
-        dnsNotify = DNSNotify(this)
+        dnsNotify = DNSNotify(this, ::handleDiscoveryStatus)
         wakeMode = loadWakeMode()
         keepSurfaceProportional(playbackSurface)
         configureVideoModeControl()
@@ -321,6 +324,16 @@ class MainActivity : Activity() {
     private fun updateWaitingStatus() {
         startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
         statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
+        discoveryStatusView.text = discoveryStatus
+    }
+
+    private fun handleDiscoveryStatus(status: String) {
+        discoveryStatus = status
+        runOnUiThread {
+            if (::discoveryStatusView.isInitialized && !isStreaming) {
+                discoveryStatusView.text = status
+            }
+        }
     }
 
     private fun hideStatus() {
