@@ -24,8 +24,10 @@ class VideoPlayer(
     private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
     @Volatile private var isStopped = false
-    private var hasCodecConfig = false
-    private var isWaitingForKeyFrame = true
+    @Volatile private var hasCodecConfig = false
+    @Volatile private var isWaitingForKeyFrame = true
+    private var shouldDropStartupFrames = true
+    private var pendingStartupDropFrames = 0
 
     fun addPacket(packet: NALPacket) {
         synchronized(packets) {
@@ -43,16 +45,14 @@ class VideoPlayer(
                 packet.release()
                 return
             }
-            if (isWaitingForKeyFrame && !packet.isKeyFrame) {
-                packet.release()
-                return
+            if (isWaitingForKeyFrame) {
+                if (!packet.isKeyFrame) {
+                    packet.release()
+                    return
+                }
+                isWaitingForKeyFrame = false
             }
-            isWaitingForKeyFrame = false
-            dropQueuedVideoFrames()
-            if (!packets.offer(packet)) {
-                packet.release()
-                return
-            }
+            enqueueVideoPacket(packet)
         }
     }
 
@@ -116,13 +116,15 @@ class VideoPlayer(
                 onFrameRendered()
             }
 
-            val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
+            var queuedInput = false
+            val inputBufferIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_USEC)
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex)
                 if (inputBuffer == null || packet.size > inputBuffer.capacity()) {
                     if (DEBUG_FRAMES) {
                         Log.d(TAG, "dropping oversized NAL: ${packet.size}")
                     }
+                    markInputDiscontinuity(packet)
                     codec.queueInputBuffer(inputBufferIndex, 0, 0, packet.pts, 0)
                     return
                 }
@@ -131,12 +133,22 @@ class VideoPlayer(
                 packet.data.position(0)
                 packet.data.limit(packet.size)
                 inputBuffer.put(packet.data)
+                if (packet.isCodecConfig) {
+                    shouldDropStartupFrames = true
+                } else if (packet.isKeyFrame && shouldDropStartupFrames) {
+                    pendingStartupDropFrames = STARTUP_RENDER_DROP_FRAMES
+                    shouldDropStartupFrames = false
+                }
                 codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.presentationTimeUs, packet.codecFlags)
-            } else if (DEBUG_FRAMES) {
-                Log.d(TAG, "dequeueInputBuffer failed")
+                queuedInput = true
+            } else {
+                if (DEBUG_FRAMES) {
+                    Log.d(TAG, "dequeueInputBuffer failed")
+                }
+                markInputDiscontinuity(packet)
             }
 
-            if (!packet.isCodecConfig && drainOutput(codec, TIMEOUT_USEC)) {
+            if (queuedInput && !packet.isCodecConfig && drainOutput(codec, OUTPUT_TIMEOUT_USEC)) {
                 onFrameRendered()
                 onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
@@ -171,13 +183,34 @@ class VideoPlayer(
         }
 
         if (pendingRenderIndex >= 0) {
+            if (pendingStartupDropFrames > 0) {
+                pendingStartupDropFrames--
+                codec.releaseOutputBuffer(pendingRenderIndex, false)
+                return false
+            }
             codec.releaseOutputBuffer(pendingRenderIndex, true)
             return true
         }
         return false
     }
 
-    private fun dropQueuedVideoFrames() {
+    private fun enqueueVideoPacket(packet: NALPacket) {
+        if (packets.offer(packet)) {
+            return
+        }
+        drainPendingVideoFrames()
+        isWaitingForKeyFrame = true
+        if (packet.isKeyFrame) {
+            isWaitingForKeyFrame = false
+            if (!packets.offer(packet)) {
+                packet.release()
+            }
+        } else {
+            packet.release()
+        }
+    }
+
+    private fun drainPendingVideoFrames() {
         val retainedConfig = ArrayList<NALPacket>(MAX_BUFFERED_FRAMES)
         while (true) {
             val queuedPacket = packets.poll() ?: break
@@ -191,6 +224,17 @@ class VideoPlayer(
             }
         }
         retainedConfig.forEach { packets.offer(it) }
+    }
+
+    private fun markInputDiscontinuity(packet: NALPacket) {
+        if (packet.isCodecConfig) {
+            hasCodecConfig = false
+        }
+        isWaitingForKeyFrame = true
+        shouldDropStartupFrames = true
+        synchronized(packets) {
+            drainPendingVideoFrames()
+        }
     }
 
     private fun drainPackets() {
@@ -215,10 +259,12 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 2
+        private const val MAX_BUFFERED_FRAMES = 8
+        private const val STARTUP_RENDER_DROP_FRAMES = 4
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
-        private const val TIMEOUT_USEC = 1000L
+        private const val INPUT_TIMEOUT_USEC = 10_000L
+        private const val OUTPUT_TIMEOUT_USEC = 1_000L
 
         private fun decoderSupportsAdaptivePlayback(decoderInfo: MediaCodecInfo, mimeType: String): Boolean {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {

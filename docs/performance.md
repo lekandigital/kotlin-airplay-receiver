@@ -36,7 +36,7 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling half-second samples, plots only completed samples, and avoids opaque backgrounds.
 
-The startup pane remains visible for the first four rendered video outputs. This adds only a few frame intervals at stream start, but lets the hardware surface replace stale or partially decoded startup contents before the centered controls disappear.
+The decoder discards the first few rendered outputs after codec setup, and the startup pane remains visible for the first four rendered video outputs after that. This adds only a few frame intervals at stream start, but lets the hardware surface replace stale or partially decoded startup contents before the centered controls disappear.
 
 Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver strips audio format details from `/info` and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
@@ -50,7 +50,7 @@ DNS-SD refreshes are idempotent. Launch and resume can both request announcement
 
 The ThinkSmart View panel is 1280x800. AirPlay mirroring commonly arrives as a 1280x720 H.264 stream, so Receiver defaults to 720p mode, configures the decoder for 1280x720, and centers a 16:9 render surface on the 16:10 panel. On the target display this yields a 1280x720 video area with black bars above and below instead of vertical stretching.
 
-This keeps the decoder format aligned with the stream instead of pretending the incoming video is 1280x800. It also avoids CPU-side scaling in Kotlin. The optional 1080p mode advertises 1920x1080 through `/info`, configures `MediaCodec` for 1920x1080, and relies on `SurfaceView`/hardware composition to downscale into the visible 16:9 view. Receiver does not force an oversized `SurfaceHolder` buffer for 1080p because that can destabilize the older Android 8.1 display stack on the ThinkSmart View. That mode may improve source-side quality, but it is expected to cost more decode bandwidth and should be tested against the latency chart on the actual device. The video queue has been restored to the `0.2.12` low-latency shape: a tiny queue preserves codec config, keeps only the freshest pending video input, and drains decoder output to render the newest available frame.
+This keeps the decoder format aligned with the stream instead of pretending the incoming video is 1280x800. It also avoids CPU-side scaling in Kotlin. The optional 1080p mode advertises 1920x1080 through `/info`, configures `MediaCodec` for 1920x1080, and relies on `SurfaceView`/hardware composition to downscale into the visible 16:9 view. Receiver does not force an oversized `SurfaceHolder` buffer for 1080p because that can destabilize the older Android 8.1 display stack on the ThinkSmart View. That mode may improve source-side quality, but it is expected to cost more decode bandwidth and should be tested against the latency chart on the actual device. The video queue stays small, but it no longer drops arbitrary pending P-frames before decode. If the queue overflows or input submission fails, Receiver drains pending video and waits for the next keyframe so the decoder does not render frames whose references were discarded.
 
 ## Hot Path
 
