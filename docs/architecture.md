@@ -20,7 +20,6 @@ At launch, `MainActivity` creates the playback surface, enters immersive full-sc
 flowchart LR
     Launcher["Android launcher"] --> Activity["MainActivity"]
     Activity --> Foreground["ReceiverForegroundService"]
-    Activity --> AirPlay["AirPlayServer"]
     Activity --> RAOP["RaopServer"]
     Activity --> DNS["DNSNotify"]
     DNS --> Bonjour["DNS-SD / Bonjour"]
@@ -35,7 +34,7 @@ flowchart LR
 
 The Kotlin layer lives under `io.carmo.airplay.receiver`.
 
-`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver services, starts them automatically, and stops them from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the selected stream's 16:9 aspect ratio so mirroring is not vertically stretched. It also shows a centered startup pane with the advertised device name, stream resolution, display wake policy, and audio controls until the first media packet arrives. A small corner label shows the installed app version on the waiting screen.
+`MainActivity` owns lifecycle orchestration. It inflates the playback `SurfaceView`, hides the system bars, starts foreground handling, constructs the receiver service, starts it automatically, and stops it from `onDestroy`. The root view fills the ThinkSmart View's 1280x800 panel, while the video surface is kept at the selected stream's 16:9 aspect ratio so mirroring is not vertically stretched. It also shows a centered startup pane with the advertised device name, stream resolution, display wake policy, and audio controls until the first media packet arrives. A small corner label shows the installed app version on the waiting screen.
 
 The stream resolution mode is stored in local preferences:
 
@@ -54,9 +53,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
-
-`AirPlayServer` is a minimal TCP listener used to provide the AirPlay service port that gets advertised through DNS-SD.
+`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The same resolved name is used for AirPlay and RAOP announcements, and both DNS-SD records point to the native RAOP control port so the Mac's first `/info` and pairing probes reach the real protocol handler. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
@@ -104,9 +101,9 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 
 ## Discovery Flow
 
-1. `MainActivity` starts `AirPlayServer` and `RaopServer`.
-2. Each service obtains an ephemeral local port.
-3. `DNSNotify` publishes `_airplay._tcp` and `_raop._tcp` records.
+1. `MainActivity` starts `RaopServer`.
+2. The native RAOP service obtains an ephemeral local control port.
+3. `DNSNotify` publishes `_airplay._tcp` and `_raop._tcp` records on that same control port.
 4. The advertised service name is based on the device name, so AirPlay clients see the ThinkSmart View by its configured Android name.
 
 ## Video Flow
