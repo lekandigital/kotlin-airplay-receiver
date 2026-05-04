@@ -26,8 +26,6 @@ class VideoPlayer(
     @Volatile private var isStopped = false
     @Volatile private var hasCodecConfig = false
     @Volatile private var isWaitingForKeyFrame = true
-    private var shouldDropStartupFrames = true
-    private var pendingStartupDropFrames = 0
 
     fun addPacket(packet: NALPacket) {
         synchronized(packets) {
@@ -133,12 +131,6 @@ class VideoPlayer(
                 packet.data.position(0)
                 packet.data.limit(packet.size)
                 inputBuffer.put(packet.data)
-                if (packet.isCodecConfig) {
-                    shouldDropStartupFrames = true
-                } else if (packet.isKeyFrame && shouldDropStartupFrames) {
-                    pendingStartupDropFrames = STARTUP_RENDER_DROP_FRAMES
-                    shouldDropStartupFrames = false
-                }
                 codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.presentationTimeUs, packet.codecFlags)
                 queuedInput = true
             } else {
@@ -183,11 +175,6 @@ class VideoPlayer(
         }
 
         if (pendingRenderIndex >= 0) {
-            if (pendingStartupDropFrames > 0) {
-                pendingStartupDropFrames--
-                codec.releaseOutputBuffer(pendingRenderIndex, false)
-                return false
-            }
             codec.releaseOutputBuffer(pendingRenderIndex, true)
             return true
         }
@@ -231,7 +218,6 @@ class VideoPlayer(
             hasCodecConfig = false
         }
         isWaitingForKeyFrame = true
-        shouldDropStartupFrames = true
         synchronized(packets) {
             drainPendingVideoFrames()
         }
@@ -260,7 +246,6 @@ class VideoPlayer(
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
         private const val MAX_BUFFERED_FRAMES = 24
-        private const val STARTUP_RENDER_DROP_FRAMES = 2
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val INPUT_TIMEOUT_USEC = 10_000L

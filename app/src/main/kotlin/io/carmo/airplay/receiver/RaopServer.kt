@@ -37,7 +37,7 @@ class RaopServer(
     @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
-    @Volatile private var hasRenderedVideo = false
+    @Volatile private var hasStartedVideo = false
     @Volatile private var streamStopThresholdMs = MEDIA_IDLE_STOP_MS
 
     init {
@@ -64,6 +64,9 @@ class RaopServer(
             dts = dts,
             receivedAtMs = SystemClock.elapsedRealtime()
         )
+        if (!packet.isCodecConfig) {
+            markVideoStarted()
+        }
         val player = videoPlayer ?: ensureVideoPlayer()
         if (player == null) {
             packet.release()
@@ -105,7 +108,7 @@ class RaopServer(
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         videoPlayer?.stopDecode()
         videoPlayer = null
-        hasRenderedVideo = false
+        hasStartedVideo = false
     }
 
     fun startServer() {
@@ -129,7 +132,7 @@ class RaopServer(
         lastVideoActivityAtMs = 0L
         lastMediaPacketAtMs = 0L
         hasConnection = false
-        hasRenderedVideo = false
+        hasStartedVideo = false
     }
 
     fun setAcceptAudio(acceptAudio: Boolean) {
@@ -245,10 +248,14 @@ class RaopServer(
     }
 
     private fun handleVideoFrameRendered() {
-        if (hasRenderedVideo) {
+        markVideoStarted()
+    }
+
+    private fun markVideoStarted() {
+        if (hasStartedVideo) {
             return
         }
-        hasRenderedVideo = true
+        hasStartedVideo = true
         onConnectionStarted()
     }
 
