@@ -37,7 +37,6 @@ class RaopServer(
     @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
-    @Volatile private var hasStartedVideo = false
     @Volatile private var streamStopThresholdMs = MEDIA_IDLE_STOP_MS
 
     init {
@@ -64,9 +63,6 @@ class RaopServer(
             dts = dts,
             receivedAtMs = SystemClock.elapsedRealtime()
         )
-        if (!packet.isCodecConfig) {
-            markVideoStarted()
-        }
         val player = videoPlayer ?: ensureVideoPlayer()
         if (player == null) {
             packet.release()
@@ -108,7 +104,6 @@ class RaopServer(
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         videoPlayer?.stopDecode()
         videoPlayer = null
-        hasStartedVideo = false
     }
 
     fun startServer() {
@@ -132,7 +127,6 @@ class RaopServer(
         lastVideoActivityAtMs = 0L
         lastMediaPacketAtMs = 0L
         hasConnection = false
-        hasStartedVideo = false
     }
 
     fun setAcceptAudio(acceptAudio: Boolean) {
@@ -185,6 +179,7 @@ class RaopServer(
         scheduleStreamStopCheck(MEDIA_IDLE_STOP_MS)
         if (!hasConnection) {
             hasConnection = true
+            onConnectionStarted()
         }
     }
 
@@ -221,13 +216,7 @@ class RaopServer(
         if (!surfaceView.holder.surface.isValid) {
             return null
         }
-        return VideoPlayer(
-            surfaceView.holder.surface,
-            videoWidth,
-            videoHeight,
-            onLatencySample,
-            ::handleVideoFrameRendered
-        )
+        return VideoPlayer(surfaceView.holder.surface, videoWidth, videoHeight, onLatencySample)
             .also {
                 videoPlayer = it
                 it.start()
@@ -245,18 +234,6 @@ class RaopServer(
             }
         }
         videoPlayer = null
-    }
-
-    private fun handleVideoFrameRendered() {
-        markVideoStarted()
-    }
-
-    private fun markVideoStarted() {
-        if (hasStartedVideo) {
-            return
-        }
-        hasStartedVideo = true
-        onConnectionStarted()
     }
 
     private fun markVideoActivity(buffer: ByteBuffer, size: Int) {

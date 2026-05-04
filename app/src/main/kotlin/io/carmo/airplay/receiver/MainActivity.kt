@@ -8,8 +8,6 @@ import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
@@ -28,6 +26,7 @@ import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
 
+    private lateinit var airPlayServer: AirPlayServer
     private lateinit var raopServer: RaopServer
     private lateinit var dnsNotify: DNSNotify
     private lateinit var playbackSurface: SurfaceView
@@ -45,7 +44,6 @@ class MainActivity : Activity() {
     private lateinit var audioVolumeOverlayBar: ProgressBar
     private lateinit var trafficMonitor: TrafficMonitorView
     private lateinit var audioManager: AudioManager
-    private val discoveryRetryHandler = Handler(Looper.getMainLooper())
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
@@ -64,7 +62,6 @@ class MainActivity : Activity() {
     private var isStarted = false
     private var isStreaming = false
     private var discoveryStatus = "Discovery starting"
-    private var discoveryRetryCount = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +90,7 @@ class MainActivity : Activity() {
         videoMode = loadVideoMode()
         acceptAudio = loadAcceptAudio()
         audioVolume = loadAudioVolume()
+        airPlayServer = AirPlayServer()
         raopServer = RaopServer(
             playbackSurface,
             ::hideStatus,
@@ -382,6 +380,12 @@ class MainActivity : Activity() {
             acceptAudio = isChecked
             saveAcceptAudio(isChecked)
             raopServer.setAcceptAudio(isChecked)
+            if (isStarted) {
+                val port = raopServer.port
+                if (port != 0) {
+                    dnsNotify.registerRaop(port, isChecked)
+                }
+            }
             updateAudioVolumeUi()
         }
         updateAudioVolumeUi()
@@ -614,44 +618,39 @@ class MainActivity : Activity() {
 
         startReceiverForegroundService()
         acquireMulticastLock()
+        airPlayServer.startServer()
+        val airplayPort = airPlayServer.port
+        if (airplayPort == 0) {
+            Toast.makeText(applicationContext, "Start the AirPlay service failed", Toast.LENGTH_SHORT).show()
+            handleDiscoveryStatus("AirPlay failed: port unavailable")
+        } else {
+            dnsNotify.registerAirplay(airplayPort)
+        }
+
         raopServer.startServer()
-        publishAirPlayAnnouncement(resetRetry = true)
+        val raopPort = raopServer.port
+        if (raopPort == 0) {
+            Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
+            handleDiscoveryStatus("RAOP failed: port unavailable")
+        } else {
+            dnsNotify.registerRaop(raopPort, acceptAudio)
+        }
 
         isStarted = true
         applyWakeMode()
-        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, controlPort = ${raopServer.port}")
+        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
     }
 
     private fun refreshAnnouncements() {
         acquireMulticastLock()
-        publishAirPlayAnnouncement(resetRetry = true)
-    }
-
-    private fun publishAirPlayAnnouncement(resetRetry: Boolean) {
-        if (resetRetry) {
-            discoveryRetryCount = 0
-            discoveryRetryHandler.removeCallbacks(publishAirPlayAnnouncementRetry)
+        val airplayPort = airPlayServer.port
+        if (airplayPort != 0) {
+            dnsNotify.registerAirplay(airplayPort)
         }
-
         val raopPort = raopServer.port
         if (raopPort != 0) {
-            dnsNotify.registerAirplay(raopPort)
-            return
+            dnsNotify.registerRaop(raopPort, acceptAudio)
         }
-
-        if (discoveryRetryCount >= DISCOVERY_MAX_RETRIES) {
-            handleDiscoveryStatus("AirPlay failed: control port unavailable")
-            Toast.makeText(applicationContext, "Start the receiver service failed", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        discoveryRetryCount++
-        handleDiscoveryStatus("AirPlay waiting for control port")
-        discoveryRetryHandler.postDelayed(publishAirPlayAnnouncementRetry, DISCOVERY_RETRY_DELAY_MS)
-    }
-
-    private val publishAirPlayAnnouncementRetry = Runnable {
-        publishAirPlayAnnouncement(resetRetry = false)
     }
 
     private fun acquireMulticastLock() {
@@ -698,7 +697,7 @@ class MainActivity : Activity() {
             return
         }
         dnsNotify.stop()
-        discoveryRetryHandler.removeCallbacks(publishAirPlayAnnouncementRetry)
+        airPlayServer.stopServer()
         raopServer.stopServer()
         isStarted = false
         lastWakeNudgeAtMs = 0L
@@ -742,8 +741,6 @@ class MainActivity : Activity() {
         private const val MULTICAST_LOCK_TAG = "ReceiverDiscovery"
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
-        private const val DISCOVERY_RETRY_DELAY_MS = 500L
-        private const val DISCOVERY_MAX_RETRIES = 10
         private const val CONTROL_OVERLAY_ELEVATION_DP = 24f
         private const val TRAFFIC_GESTURE_EDGE_DP = 96f
         private const val TRAFFIC_GESTURE_DRAG_DP = 48f

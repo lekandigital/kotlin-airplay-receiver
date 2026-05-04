@@ -53,7 +53,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. The AirPlay DNS-SD record points to the native RAOP control port so the Mac's first `/info` and pairing probes reach the real protocol handler. RAOP service discovery is intentionally not published on the same port, avoiding Android 8.1 NSD collisions while keeping the mirroring path discoverable. While active, `MainActivity` holds Android's Wi-Fi multicast lock, retries announcement briefly if the native control port is not ready on the first startup tick, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
+`DNSNotify` handles local network service registration through the bundled DNS-SD bridge. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. Receiver advertises the same two-service shape used by the last known working `0.2.12` line: `_airplay._tcp` points at a lightweight AirPlay announcement socket, while `_raop._tcp` points at the native RAOP control port that owns mirroring setup. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
@@ -72,7 +72,7 @@ When the native RAOP connection receives `TEARDOWN`, or the mirror media socket 
 
 ## Media Playback Layer
 
-`VideoPlayer` is a dedicated thread around Android `MediaCodec`. It preserves H.264 input continuity so dependent frames are not dropped before the decoder sees them; if the input queue overflows, Receiver drains pending input and waits for the next keyframe instead of showing corrupted output. It also drains decoder output and renders only the newest waiting output frame. The startup pane is removed as soon as real video data arrives so a static desktop does not look stuck while the decoder waits for its first output. On the ThinkSmart View target it defaults to H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream. The optional 1920x1080 mode uses the same decode path and relies on the display surface for downscaling without forcing an oversized fixed surface buffer.
+`VideoPlayer` is a dedicated thread around Android `MediaCodec`. The video path is intentionally back on the `0.2.12` low-latency behavior: it keeps a two-packet queue, preserves codec config, replaces pending video input with the newest frame before enqueueing, and drains decoder output so only the newest waiting output frame is rendered. The startup pane is removed on the first media packet, matching the previously working connection transition instead of waiting on a later decoder-render signal that could leave the display stuck or black. On the ThinkSmart View target it defaults to H.264 at 1280x720 and renders decoded frames directly to the centered 16:9 `SurfaceView`, leaving black bars on the 1280x800 panel instead of stretching the stream. The optional 1920x1080 mode uses the same decode path and relies on the display surface for downscaling without forcing an oversized fixed surface buffer.
 
 `AudioPlayer` is a dedicated thread around `AudioTrack`. It uses `AudioTrack.Builder` on Android 8.1 and writes PCM from direct `ByteBuffer` packets. PCM playback keeps a modest continuity cushion without letting audio dominate receiver latency: it prebuffers 8 packets before starting, uses a 4x platform buffer and blocking writes, and caps PCM packets at 32 queued packets while trimming to 24 pending packets.
 
@@ -95,16 +95,16 @@ The app links three important native outputs:
 
 - `raop_server`, the JNI bridge
 - `play-lib`, the AirPlay/RAOP implementation
-- `jdns_sd`, the retained DNS-SD JNI compatibility bridge; active Bonjour advertisement is handled by Android NSD in `DNSNotify`
+- `jdns_sd`, the retained DNS-SD JNI bridge used by `DNSNotify` for Bonjour advertisement
 
 The JNI bridge caches callback method IDs once at server startup and reuses thread attachments, avoiding repeated lookup and attach/detach overhead on every audio or video packet. Media callbacks use native-owned direct buffers instead of Java heap arrays; playback releases those buffers after write, decode, or drop.
 
 ## Discovery Flow
 
-1. `MainActivity` starts `RaopServer`.
-2. The native RAOP service obtains an ephemeral local control port.
-3. `DNSNotify` publishes `_airplay._tcp` on that control port.
-4. The advertised service name is based on the device name, so AirPlay clients see the ThinkSmart View by its configured Android name.
+1. `MainActivity` starts a lightweight `AirPlayServer` announcement socket and the native `RaopServer`.
+2. Each server obtains an ephemeral local TCP port.
+3. `DNSNotify` publishes `_airplay._tcp` on the AirPlay socket and `_raop._tcp` on the native RAOP control port.
+4. The advertised service names are based on the device name and local MAC address, so AirPlay clients see the ThinkSmart View by its configured Android name while mirroring setup reaches the native receiver.
 
 ## Video Flow
 
