@@ -16,7 +16,8 @@ class VideoPlayer(
     private val surface: Surface,
     private val width: Int,
     private val height: Int,
-    private val onLatencySample: (Long) -> Unit = {}
+    private val onLatencySample: (Long) -> Unit = {},
+    private val onFrameRendered: () -> Unit = {}
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
@@ -111,7 +112,9 @@ class VideoPlayer(
         }
 
         try {
-            drainOutput(codec, 0L)
+            if (drainOutput(codec, 0L)) {
+                onFrameRendered()
+            }
 
             val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
             if (inputBufferIndex >= 0) {
@@ -134,6 +137,7 @@ class VideoPlayer(
             }
 
             if (!packet.isCodecConfig && drainOutput(codec, TIMEOUT_USEC)) {
+                onFrameRendered()
                 onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
         } catch (e: Exception) {

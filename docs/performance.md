@@ -36,6 +36,8 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling half-second samples, plots only completed samples, and avoids opaque backgrounds.
 
+The startup pane remains visible for the first four rendered video outputs. This adds only a few frame intervals at stream start, but lets the hardware surface replace stale or partially decoded startup contents before the centered controls disappear.
+
 Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver strips audio format details from `/info` and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
 Receiver exits on explicit stream teardown, when the mirror media socket closes and no fresh media arrives during a short grace window, or when an established stream goes media-idle for 20 seconds. This avoids leaving the appliance in a stale receiver state after the sender stops mirroring and also releases wake locks, foreground notification state, media players, and DNS-SD registrations through the normal activity destroy path. Receiver does not exit merely because the RTSP control socket closes, since some senders recycle that socket while a long-running mirror stream is still active.

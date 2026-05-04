@@ -37,6 +37,8 @@ class RaopServer(
     @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
+    @Volatile private var hasStartedVideo = false
+    @Volatile private var startupRenderedFrames = 0
     @Volatile private var streamStopThresholdMs = MEDIA_IDLE_STOP_MS
 
     init {
@@ -104,6 +106,8 @@ class RaopServer(
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         videoPlayer?.stopDecode()
         videoPlayer = null
+        hasStartedVideo = false
+        startupRenderedFrames = 0
     }
 
     fun startServer() {
@@ -127,6 +131,8 @@ class RaopServer(
         lastVideoActivityAtMs = 0L
         lastMediaPacketAtMs = 0L
         hasConnection = false
+        hasStartedVideo = false
+        startupRenderedFrames = 0
     }
 
     fun setAcceptAudio(acceptAudio: Boolean) {
@@ -179,7 +185,6 @@ class RaopServer(
         scheduleStreamStopCheck(MEDIA_IDLE_STOP_MS)
         if (!hasConnection) {
             hasConnection = true
-            onConnectionStarted()
         }
     }
 
@@ -216,7 +221,13 @@ class RaopServer(
         if (!surfaceView.holder.surface.isValid) {
             return null
         }
-        return VideoPlayer(surfaceView.holder.surface, videoWidth, videoHeight, onLatencySample)
+        return VideoPlayer(
+            surfaceView.holder.surface,
+            videoWidth,
+            videoHeight,
+            onLatencySample,
+            ::handleVideoFrameRendered
+        )
             .also {
                 videoPlayer = it
                 it.start()
@@ -234,6 +245,18 @@ class RaopServer(
             }
         }
         videoPlayer = null
+    }
+
+    private fun handleVideoFrameRendered() {
+        if (hasStartedVideo) {
+            return
+        }
+        startupRenderedFrames++
+        if (startupRenderedFrames < STARTUP_VISIBLE_FRAME_COUNT) {
+            return
+        }
+        hasStartedVideo = true
+        onConnectionStarted()
     }
 
     private fun markVideoActivity(buffer: ByteBuffer, size: Int) {
@@ -284,6 +307,7 @@ class RaopServer(
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val MEDIA_IDLE_STOP_MS = 20_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
+        private const val STARTUP_VISIBLE_FRAME_COUNT = 4
         private const val NAL_TYPE_MASK = 0x1F
         private const val NAL_TYPE_IDR = 5
         private const val NAL_TYPE_SPS = 7
