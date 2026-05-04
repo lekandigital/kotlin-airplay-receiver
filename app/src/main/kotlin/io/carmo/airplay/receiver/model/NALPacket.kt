@@ -69,5 +69,29 @@ class NALPacket(
         private const val NAL_TYPE_IDR = 5
         private const val START_CODE_BYTE: Byte = 0
         private const val START_CODE_ONE: Byte = 1
+
+        /**
+         * Creates a synthetic codec-config NAL packet from a Java byte array.
+         * The resulting packet has no native pointer and is safe to release without
+         * touching native memory. Used to replay cached SPS/PPS into a freshly
+         * created [io.carmo.airplay.receiver.player.VideoPlayer] when the original
+         * codec config was received before the player existed (e.g. surface was
+         * not yet valid, or it was torn down between sessions).
+         */
+        fun forCodecConfig(bytes: ByteArray, receivedAtMs: Long): NALPacket {
+            val copy = bytes.copyOf()
+            val buffer = ByteBuffer.wrap(copy)
+            buffer.position(0)
+            buffer.limit(copy.size)
+            return NALPacket(
+                data = buffer,
+                size = copy.size,
+                nativePointer = 0L,
+                nalType = NAL_TYPE_CODEC_CONFIG,
+                pts = 0L,
+                dts = 0L,
+                receivedAtMs = receivedAtMs
+            )
+        }
     }
 }

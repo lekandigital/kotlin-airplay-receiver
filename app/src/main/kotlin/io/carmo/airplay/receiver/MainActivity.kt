@@ -136,8 +136,15 @@ class MainActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && ::startupPanel.isInitialized && !isStreaming) {
-            configurePlaybackWindow()
-            updateWaitingStatus()
+            // Only re-assert immersive flags if they actually drifted. Writing
+            // systemUiVisibility unconditionally on every focus event —
+            // including the brief focus blip when a tap reveals the system
+            // bars under FLAG_IMMERSIVE_STICKY — forces a layout pass that
+            // shows up as a flicker on the startup panel.
+            ensureImmersiveFlags()
+            // Note: text is intentionally NOT refreshed here. Nothing observable
+            // by the user changes between focus events, so rewriting it just
+            // adds a needless redraw cycle.
         }
     }
 
@@ -159,15 +166,19 @@ class MainActivity : Activity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
+        ensureImmersiveFlags()
+    }
 
-        window.decorView.systemUiVisibility = (
-            View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            )
+    /**
+     * Idempotent: only rewrites the system-UI visibility bitmask when it has
+     * actually drifted from our desired value. This keeps tap-induced focus
+     * blips from triggering a redundant layout pass on the startup panel.
+     */
+    private fun ensureImmersiveFlags() {
+        val decor = window.decorView
+        if (decor.systemUiVisibility != IMMERSIVE_FLAGS) {
+            decor.systemUiVisibility = IMMERSIVE_FLAGS
+        }
     }
 
     private fun configurePlaybackSurface(surfaceView: SurfaceView) {
@@ -524,6 +535,14 @@ class MainActivity : Activity() {
     }
 
     private fun handleTrafficMonitorGesture(event: MotionEvent) {
+        // The traffic monitor is only meaningful while video is streaming, so
+        // ignore gesture detection entirely when the startup panel is up. This
+        // also stops accidental top-right taps on the version label from
+        // "arming" the gesture and changing visible state on the next move.
+        if (!isStreaming) {
+            isTrafficGestureCandidate = false
+            return
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 trafficGestureStartX = event.x
@@ -756,5 +775,14 @@ class MainActivity : Activity() {
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
         private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
         private const val DEBUG_CODECS = false
+
+        @Suppress("DEPRECATION")
+        private val IMMERSIVE_FLAGS =
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
     }
 }

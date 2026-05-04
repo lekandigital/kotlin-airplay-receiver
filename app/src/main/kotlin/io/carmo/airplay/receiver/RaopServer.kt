@@ -41,6 +41,17 @@ class RaopServer(
     @Volatile private var startupRenderedFrames = 0
     @Volatile private var streamStopThresholdMs = STREAM_STOP_GRACE_MS
 
+    /**
+     * Cached SPS/PPS bytes from the most recent codec-config NAL we received
+     * over the wire. The Mac sends SPS/PPS once at session start; if our
+     * VideoPlayer is recreated mid-session (surface change, video-mode toggle,
+     * adaptive-playback restart) we replay this into the new player so it can
+     * actually decode without forcing the source to reconnect.
+     */
+    @Volatile private var cachedCodecConfig: ByteArray? = null
+    /** Wall-clock time (elapsedRealtime) when the first video byte arrived. */
+    @Volatile private var firstVideoBytesAtMs = 0L
+
     init {
         surfaceView.holder.addCallback(this)
         if (acceptAudio) {
@@ -54,8 +65,26 @@ class RaopServer(
             Log.d(TAG, "onRecvVideoData dts = $dts, pts = $pts, nalType = $nalType, nal length = $size")
         }
         markConnected()
+        if (firstVideoBytesAtMs == 0L) {
+            firstVideoBytesAtMs = SystemClock.elapsedRealtime()
+            scheduleStartupWatchdog()
+            Log.i(TAG, "first video bytes received (size=$size, nalType=$nalType)")
+        }
         markVideoActivity(buffer, size)
         onTrafficSample(size)
+
+        // Capture SPS/PPS so we can replay it into any future VideoPlayer
+        // instance. The native byte buffer is freed when the NALPacket is
+        // released so we MUST copy here, not keep a reference to it.
+        if (nalType == NAL_TYPE_CODEC_CONFIG && size > 0) {
+            val copy = ByteArray(size)
+            buffer.position(0)
+            buffer.limit(size)
+            buffer.get(copy)
+            cachedCodecConfig = copy
+            Log.i(TAG, "cached SPS/PPS (size=$size) for replay")
+        }
+
         val packet = NALPacket(
             data = buffer,
             size = size,
@@ -67,6 +96,7 @@ class RaopServer(
         )
         val player = videoPlayer ?: ensureVideoPlayer()
         if (player == null) {
+            Log.w(TAG, "no video player available (surface invalid?); dropping packet (nalType=$nalType, size=$size)")
             packet.release()
             return
         }
@@ -121,6 +151,7 @@ class RaopServer(
 
     fun stopServer() {
         mainHandler.removeCallbacks(confirmStreamStopped)
+        mainHandler.removeCallbacks(startupWatchdog)
         if (serverId != 0L) {
             stop(serverId)
         }
@@ -133,6 +164,8 @@ class RaopServer(
         hasConnection = false
         hasStartedVideo = false
         startupRenderedFrames = 0
+        firstVideoBytesAtMs = 0L
+        cachedCodecConfig = null
     }
 
     fun setAcceptAudio(acceptAudio: Boolean) {
@@ -220,17 +253,27 @@ class RaopServer(
         if (!surfaceView.holder.surface.isValid) {
             return null
         }
-        return VideoPlayer(
+        val newPlayer = VideoPlayer(
             surfaceView.holder.surface,
             videoWidth,
             videoHeight,
             onLatencySample,
             ::handleVideoFrameRendered
         )
-            .also {
-                videoPlayer = it
-                it.start()
-            }
+        videoPlayer = newPlayer
+        newPlayer.start()
+        // Replay cached SPS/PPS so the freshly-created decoder has codec
+        // config without waiting for the source to send it again. Without
+        // this, swapping video modes mid-session (or any time the surface
+        // is recreated) leaves the decoder permanently waiting and the
+        // user staring at a black screen.
+        cachedCodecConfig?.let { configBytes ->
+            Log.i(TAG, "replaying cached SPS/PPS (size=${configBytes.size}) into new VideoPlayer")
+            newPlayer.addPacket(
+                NALPacket.forCodecConfig(configBytes, SystemClock.elapsedRealtime())
+            )
+        }
+        return newPlayer
     }
 
     @Synchronized
@@ -255,7 +298,41 @@ class RaopServer(
             return
         }
         hasStartedVideo = true
+        mainHandler.removeCallbacks(startupWatchdog)
         onConnectionStarted()
+    }
+
+    /**
+     * Watchdog that forces the startup overlay to hide if video bytes are
+     * arriving but no frame has actually rendered within a generous window.
+     * Without this, any rendering failure (codec init crash, decoder stuck on
+     * back-pressure, surface stuck behind a system dialog, etc.) leaves the
+     * receiver showing the "waiting" panel forever even though the source is
+     * connected.
+     */
+    private val startupWatchdog = Runnable {
+        if (hasStartedVideo) {
+            return@Runnable
+        }
+        // Only force-hide if traffic is genuinely flowing. Otherwise the
+        // panel correctly reflects an idle receiver.
+        val trafficAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
+        if (lastMediaPacketAtMs == 0L || trafficAgeMs > STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS) {
+            return@Runnable
+        }
+        Log.w(
+            TAG,
+            "startup watchdog: ${STARTUP_WATCHDOG_MS}ms elapsed since first video bytes " +
+                "but no frame rendered (renderedFrames=$startupRenderedFrames). " +
+                "Hiding startup overlay so the surface is visible."
+        )
+        hasStartedVideo = true
+        onConnectionStarted()
+    }
+
+    private fun scheduleStartupWatchdog() {
+        mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.postDelayed(startupWatchdog, STARTUP_WATCHDOG_MS)
     }
 
     private fun markVideoActivity(buffer: ByteBuffer, size: Int) {
@@ -306,10 +383,18 @@ class RaopServer(
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val STARTUP_VISIBLE_FRAME_COUNT = 4
+        // If video bytes have been arriving for this long with no rendered
+        // frame, give up waiting for onFrameRendered and unblock the UI. The
+        // surface will simply show whatever the decoder eventually paints.
+        private const val STARTUP_WATCHDOG_MS = 6_000L
+        // The watchdog only fires if traffic is recent; avoids spuriously
+        // hiding the panel after a long idle gap.
+        private const val STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS = 2_000L
         private const val NAL_TYPE_MASK = 0x1F
         private const val NAL_TYPE_IDR = 5
         private const val NAL_TYPE_SPS = 7
         private const val NAL_TYPE_PPS = 8
+        private const val NAL_TYPE_CODEC_CONFIG = 0
         private const val START_CODE_BYTE: Byte = 0
         private const val START_CODE_ONE: Byte = 1
 
