@@ -1,11 +1,14 @@
 package io.carmo.airplay.receiver
 
 import android.content.Context
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import com.apple.dnssd.DNSSD
+import com.apple.dnssd.DNSSDRegistration
+import com.apple.dnssd.DNSSDService
+import com.apple.dnssd.RegisterListener
+import com.apple.dnssd.TXTRecord
 import java.util.Locale
 import java.util.concurrent.locks.ReentrantLock
 
@@ -14,9 +17,8 @@ class DNSNotify(
     private val onStatusChanged: (String) -> Unit = {}
 ) {
 
-    private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private var airplayRegister: NsdRegister? = null
-    private var raopRegister: NsdRegister? = null
+    private var airplayRegister: Register? = null
+    private var raopRegister: Register? = null
     val deviceName: String = resolveDeviceName(context)
     private val macAddress: String = NetUtils.localMacAddress()
     private var airplayStatus: String = "AirPlay idle"
@@ -24,71 +26,76 @@ class DNSNotify(
 
     fun registerAirplay(port: Int) {
         Log.d(TAG, "registerAirplay port = $port, macAddress = $macAddress")
-        val attributes = mapOf(
-            "deviceid" to macAddress,
-            "features" to "0x5A7FFFF7,0x1E",
-            "srcvers" to "220.68",
-            "flags" to "0x4",
-            "vv" to "2",
-            "model" to "AppleTV2,1",
-            "pw" to "false",
-            "rhd" to "5.6.0.0",
-            "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
-            "pi" to "2e388006-13ba-4041-9a67-25dd4a43d536"
-        )
-        val serviceType = "_airplay._tcp."
-        if (airplayRegister?.matches(deviceName, serviceType, port, attributes) == true) {
+        val txtRecord = TXTRecord().apply {
+            set("deviceid", macAddress)
+            set("features", "0x5A7FFFF7,0x1E")
+            set("srcvers", "220.68")
+            set("flags", "0x4")
+            set("vv", "2")
+            set("model", "AppleTV2,1")
+            set("pw", "false")
+            set("rhd", "5.6.0.0")
+            set("pk", "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7")
+            set("pi", "2e388006-13ba-4041-9a67-25dd4a43d536")
+        }
+        if (airplayRegister?.matches(deviceName, AIRPLAY_TYPE, port, txtRecord) == true) {
             return
         }
         airplayRegister?.stop()
         updateRegistrationStatus(AIRPLAY_LABEL, "AirPlay announcing on port $port")
-        airplayRegister = NsdRegister(nsdManager, deviceName, serviceType, port, attributes, AIRPLAY_LABEL, ::updateRegistrationStatus)
+        airplayRegister = Register(
+            txtRecord,
+            deviceName,
+            AIRPLAY_TYPE,
+            LOCAL_DOMAIN,
+            EMPTY_HOST,
+            port,
+            AIRPLAY_LABEL,
+            ::updateRegistrationStatus
+        )
     }
 
     fun registerRaop(port: Int, acceptAudio: Boolean) {
         Log.d(TAG, "registerRaop port = $port, acceptAudio = $acceptAudio")
-        val attributes = mutableMapOf(
-            "da" to acceptAudio.toString(),
-            "et" to "0,3,5",
-            "vv" to "2",
-            "ft" to "0x5A7FFFF7,0x1E",
-            "am" to "AppleTV2,1",
-            "rhd" to "5.6.0.0",
-            "pw" to "false",
-            "sv" to "false",
-            "tp" to "UDP",
-            "txtvers" to "1",
-            "sf" to "0x4",
-            "vs" to "220.68",
-            "vn" to "65537",
-            "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7"
-        )
-        if (acceptAudio) {
-            attributes["ch"] = "2"
-            attributes["cn"] = "0,1,2,3"
-            attributes["md"] = "0,1,2"
-            attributes["sr"] = "44100"
-            attributes["ss"] = "16"
+        val txtRecord = TXTRecord().apply {
+            set("da", acceptAudio.toString())
+            set("et", "0,3,5")
+            set("vv", "2")
+            set("ft", "0x5A7FFFF7,0x1E")
+            set("am", "AppleTV2,1")
+            set("rhd", "5.6.0.0")
+            set("pw", "false")
+            set("sv", "false")
+            set("tp", "UDP")
+            set("txtvers", "1")
+            set("sf", "0x4")
+            set("vs", "220.68")
+            set("vn", "65537")
+            set("pk", "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7")
+            if (acceptAudio) {
+                set("ch", "2")
+                set("cn", "0,1,2,3")
+                set("md", "0,1,2")
+                set("sr", "44100")
+                set("ss", "16")
+            }
         }
-        val serviceName = raopServiceName()
-        val serviceType = "_raop._tcp."
-        if (raopRegister?.matches(serviceName, serviceType, port, attributes) == true) {
+        val serviceName = "${macAddress.replace(":", "")}@$deviceName"
+        if (raopRegister?.matches(serviceName, RAOP_TYPE, port, txtRecord) == true) {
             return
         }
         raopRegister?.stop()
         updateRegistrationStatus(RAOP_LABEL, "RAOP announcing on port $port")
-        raopRegister = NsdRegister(nsdManager, serviceName, serviceType, port, attributes, RAOP_LABEL, ::updateRegistrationStatus)
-    }
-
-    private fun raopServiceName(): String {
-        val prefix = "${macAddress.replace(":", "")}@"
-        val maxNameLength = (MAX_SERVICE_NAME_LENGTH - prefix.length).coerceAtLeast(1)
-        val name = if (deviceName.length > maxNameLength) {
-            deviceName.substring(0, maxNameLength)
-        } else {
-            deviceName
-        }
-        return "$prefix$name"
+        raopRegister = Register(
+            txtRecord,
+            serviceName,
+            RAOP_TYPE,
+            LOCAL_DOMAIN,
+            EMPTY_HOST,
+            port,
+            RAOP_LABEL,
+            ::updateRegistrationStatus
+        )
     }
 
     private fun updateRegistrationStatus(label: String, status: String) {
@@ -107,61 +114,45 @@ class DNSNotify(
         raopRegister = null
     }
 
-    private class NsdRegister(
-        private val nsdManager: NsdManager,
+    private class Register(
+        private val txtRecord: TXTRecord,
         private val serviceName: String,
-        private val serviceType: String,
+        private val regType: String,
+        private val domain: String,
+        private val host: String,
         private val port: Int,
-        private val attributes: Map<String, String>,
         private val label: String,
         private val onStatusChanged: (String, String) -> Unit
-    ) : NsdManager.RegistrationListener {
+    ) : RegisterListener {
         private val lock = ReentrantLock()
-        private var isStopped = false
-        private var isRegistered = false
+        private var registration: DNSSDRegistration? = null
         private var hasFailed = false
 
         init {
-            val registrationServiceName = serviceName
-            val registrationServiceType = serviceType
-            val registrationPort = port
-            val serviceInfo = NsdServiceInfo().apply {
-                this.serviceName = registrationServiceName
-                this.serviceType = registrationServiceType
-                this.port = registrationPort
-            }
-            attributes.forEach { (key, value) ->
-                serviceInfo.setAttribute(key, value)
-            }
             lock.lock()
             try {
-                nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, this)
+                registration = DNSSD.register(0, 0, serviceName, regType, domain, host, port, txtRecord, this)
             } catch (e: Throwable) {
-                e.printStackTrace()
+                hasFailed = true
+                Log.e(TAG, "$label registration failed", e)
                 onStatusChanged(label, "$label failed: ${e.javaClass.simpleName}")
             } finally {
                 lock.unlock()
             }
         }
 
-        override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-            Log.i(TAG, "$label registered: ${serviceInfo.serviceName}.${serviceInfo.serviceType}")
-            var shouldUnregister = false
-            lock.lock()
-            try {
-                isRegistered = true
-                shouldUnregister = isStopped
-            } finally {
-                lock.unlock()
-            }
-            if (shouldUnregister) {
-                stop()
-                return
-            }
-            onStatusChanged(label, "$label announced as ${serviceInfo.serviceName}")
+        override fun serviceRegistered(
+            registration: DNSSDRegistration,
+            flags: Int,
+            serviceName: String,
+            regType: String,
+            domain: String
+        ) {
+            Log.i(TAG, "$label registered: $serviceName.$regType$domain")
+            onStatusChanged(label, "$label announced as $serviceName")
         }
 
-        override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+        override fun operationFailed(service: DNSSDService, errorCode: Int) {
             Log.e(TAG, "$label registration failed: $errorCode")
             lock.lock()
             try {
@@ -169,49 +160,28 @@ class DNSNotify(
             } finally {
                 lock.unlock()
             }
-            if (!isStopped) {
-                onStatusChanged(label, "$label failed: $errorCode")
-            }
-        }
-
-        override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) {
-            Log.i(TAG, "$label unregistered: ${serviceInfo.serviceName}.${serviceInfo.serviceType}")
-            lock.lock()
-            try {
-                isRegistered = false
-            } finally {
-                lock.unlock()
-            }
-        }
-
-        override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            Log.w(TAG, "$label unregistration failed: $errorCode")
+            onStatusChanged(label, "$label failed: $errorCode")
         }
 
         fun stop() {
             lock.lock()
             try {
-                isStopped = true
-                if (isRegistered) {
-                    nsdManager.unregisterService(this)
-                    isRegistered = false
-                }
-            } catch (e: IllegalArgumentException) {
-                Log.w(TAG, "$label was already unregistered")
+                registration?.stop()
+                registration = null
             } finally {
                 lock.unlock()
             }
         }
 
-        fun matches(serviceName: String, serviceType: String, port: Int, attributes: Map<String, String>): Boolean {
+        fun matches(serviceName: String, regType: String, port: Int, txtRecord: TXTRecord): Boolean {
             lock.lock()
             try {
-                return !isStopped &&
-                    !hasFailed &&
+                return !hasFailed &&
+                    registration != null &&
                     this.serviceName == serviceName &&
-                    this.serviceType == serviceType &&
+                    this.regType == regType &&
                     this.port == port &&
-                    this.attributes == attributes
+                    this.txtRecord.rawBytes.contentEquals(txtRecord.rawBytes)
             } finally {
                 lock.unlock()
             }
@@ -222,7 +192,10 @@ class DNSNotify(
         private const val TAG = "Receiver-DNS"
         private const val AIRPLAY_LABEL = "AirPlay"
         private const val RAOP_LABEL = "RAOP"
-        private const val MAX_SERVICE_NAME_LENGTH = 63
+        private const val AIRPLAY_TYPE = "_airplay._tcp"
+        private const val RAOP_TYPE = "_raop._tcp"
+        private const val LOCAL_DOMAIN = "local."
+        private const val EMPTY_HOST = ""
 
         private fun resolveDeviceName(context: Context): String {
             val configuredName = Settings.Global.getString(context.contentResolver, "device_name")
