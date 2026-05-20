@@ -309,25 +309,17 @@ raop_handler_setup(raop_conn_t *conn,
         return;
     }
     plist_t streams_note = plist_dict_get_item(root_node, "streams");
-    plist_t stream_note = NULL;
-    uint64_t stream_type = 0;
-    int has_stream_type = 0;
-    if (streams_note) {
-        stream_note = plist_array_get_item(streams_note, 0);
-        if (stream_note) {
-            plist_t type_note = plist_dict_get_item(stream_note, "type");
-            if (type_note) {
-                plist_get_uint_val(type_note, &stream_type);
-                has_stream_type = 1;
-                logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP stream type = %llu", stream_type);
-            }
-        }
-    }
-    plist_t eiv_note = plist_dict_get_item(root_node, "eiv");
-    plist_t ekey_note = plist_dict_get_item(root_node, "ekey");
-    if (conn->setup == 0 && eiv_note && ekey_note) {
+    if (conn->setup == 0) {
 		unsigned char aesiv[16];
 		unsigned char aeskey[16];
+        plist_t eiv_note = plist_dict_get_item(root_node, "eiv");
+        plist_t ekey_note = plist_dict_get_item(root_node, "ekey");
+        if (!eiv_note || !ekey_note) {
+            logger_log(conn->raop->logger, LOGGER_ERR, "Missing SETUP key material");
+            http_response_set_disconnect(response, 1);
+            plist_free(root_node);
+            return;
+        }
         conn->setup++;
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 1");
         // First setup
@@ -376,18 +368,23 @@ raop_handler_setup(raop_conn_t *conn,
 		if (conn->raop_rtp_mirror) {
 			raop_add_active_mirror(conn->raop, conn->raop_rtp_mirror);
 		}
-    } else if ((has_stream_type && stream_type == 110) || (!has_stream_type && conn->setup == 1)) {
+    } else if (conn->setup == 1) {
 		unsigned short tport=0, dport=0;
-        if (conn->setup < 2) {
-            conn->setup = 2;
-        }
-        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP video");
+        conn->setup++;
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 2");
+		plist_t stream_note = streams_note ? plist_array_get_item(streams_note, 0) : NULL;
         if (!stream_note) {
             logger_log(conn->raop->logger, LOGGER_ERR, "Missing stream plist for video SETUP");
             http_response_set_disconnect(response, 1);
             plist_free(root_node);
             return;
         }
+		plist_t type_note = plist_dict_get_item(stream_note, "type");
+        uint64_t type = 0;
+        if (type_note) {
+            plist_get_uint_val(type_note, &type);
+        }
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "type = %llu", type);
 		plist_t stream_id_note = plist_dict_get_item(stream_note, "streamConnectionID");
         if (!stream_id_note) {
             logger_log(conn->raop->logger, LOGGER_ERR, "Missing streamConnectionID for video SETUP");
@@ -432,8 +429,8 @@ raop_handler_setup(raop_conn_t *conn,
             *response_datalen = len;
         }
         logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d", dport, tport);
-    } else if ((has_stream_type && stream_type == 96) || conn->setup >= 2) {
-        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP audio");
+    } else {
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 3");
         unsigned short cport = 0, tport = 0, dport = 0;
 
         if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
@@ -492,9 +489,6 @@ raop_handler_setup(raop_conn_t *conn,
 		}
 
 		logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d, cport = %d", dport, tport, cport);
-    } else {
-        logger_log(conn->raop->logger, LOGGER_ERR, "Unsupported SETUP request without a known stream type");
-        http_response_set_disconnect(response, 1);
     }
 
     plist_free(root_node);
