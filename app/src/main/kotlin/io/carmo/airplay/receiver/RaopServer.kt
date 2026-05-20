@@ -63,7 +63,7 @@ class RaopServer(
         if (DEBUG_FRAMES) {
             Log.d(TAG, "onRecvVideoData dts = $dts, pts = $pts, nalType = $nalType, nal length = $size")
         }
-        markConnected()
+        markMediaTraffic()
         if (firstVideoBytesAtMs == 0L) {
             firstVideoBytesAtMs = SystemClock.elapsedRealtime()
             scheduleStartupWatchdog()
@@ -77,9 +77,10 @@ class RaopServer(
         // released so we MUST copy here, not keep a reference to it.
         if (nalType == NAL_TYPE_CODEC_CONFIG && size > 0) {
             val copy = ByteArray(size)
-            buffer.position(0)
-            buffer.limit(size)
-            buffer.get(copy)
+            val duplicate = buffer.duplicate()
+            duplicate.position(0)
+            duplicate.limit(size)
+            duplicate.get(copy)
             cachedCodecConfig = copy
             Log.i(TAG, "cached SPS/PPS (size=$size) for replay")
         }
@@ -210,18 +211,9 @@ class RaopServer(
     private external fun stop(serverId: Long)
     private external fun getPort(serverId: Long): Int
 
-    private fun markConnected() {
+    private fun markMediaTraffic() {
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
-        if (!hasConnection) {
-            hasConnection = true
-            // Hide the startup overlay as soon as video starts flowing. This is
-            // the 0.2.12 behavior — the overlay must NOT wait for decoded
-            // frames, because on slower devices (Android 8.1 hardware in
-            // particular) MediaCodec can take noticeable time to surface the
-            // first frame, leaving the user staring at the panel for seconds
-            // even though the stream is healthy.
-            onConnectionStarted()
-        }
+        hasConnection = true
     }
 
     private val confirmStreamStopped = Runnable {
@@ -294,22 +286,22 @@ class RaopServer(
     }
 
     private fun handleVideoFrameRendered() {
-        // Once the overlay has been hidden via markConnected(), there's nothing
-        // for us to do here — but we still get this callback for every rendered
-        // frame, so we keep it cheap. The startup-watchdog cancellation lives
-        // here as belt-and-braces in case it was scheduled.
+        // Hide the startup overlay only after MediaCodec has painted a real
+        // frame. First-packet hiding can turn a decoder startup problem into a
+        // blank screen, which is much harder to diagnose from the couch.
         if (hasStartedVideo) {
             return
         }
         hasStartedVideo = true
         mainHandler.removeCallbacks(startupWatchdog)
+        lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        onConnectionStarted()
     }
 
     /**
-     * Watchdog that is now a pure safety net: in the normal case the overlay
-     * is hidden by [markConnected] on the first media packet, and this never
-     * fires. It exists only to recover from any future regression where
-     * markConnected somehow doesn't run (e.g. all video is silently dropped).
+     * Watchdog that logs when video bytes are arriving but no decoded frame has
+     * reached the surface yet. It deliberately does not hide the startup panel:
+     * that would just turn a decoder startup problem into a black screen.
      */
     private val startupWatchdog = Runnable {
         if (hasStartedVideo) {
@@ -321,10 +313,8 @@ class RaopServer(
         }
         Log.w(
             TAG,
-            "startup watchdog: ${STARTUP_WATCHDOG_MS}ms with traffic but no rendered frame; forcing overlay hide."
+            "startup watchdog: ${STARTUP_WATCHDOG_MS}ms with traffic but no rendered frame"
         )
-        hasStartedVideo = true
-        onConnectionStarted()
     }
 
     private fun scheduleStartupWatchdog() {

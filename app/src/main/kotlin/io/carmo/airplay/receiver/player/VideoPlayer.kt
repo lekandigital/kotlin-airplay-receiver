@@ -9,7 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import io.carmo.airplay.receiver.model.NALPacket
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit
 
 class VideoPlayer(
@@ -21,12 +21,14 @@ class VideoPlayer(
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
-    private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
+    private val packets = LinkedBlockingDeque<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
     @Volatile private var isStopped = false
     @Volatile private var hasCodecConfig = false
+    @Volatile private var codecConfigSubmitted = false
     @Volatile private var isWaitingForKeyFrame = true
     @Volatile private var hasRenderedFirstFrame = false
+    @Volatile private var latestCodecConfig: ByteArray? = null
 
     // Diagnostic flags — log critical lifecycle events exactly once per player.
     private var hasLoggedConfigQueued = false
@@ -40,11 +42,15 @@ class VideoPlayer(
     fun addPacket(packet: NALPacket) {
         synchronized(packets) {
             if (packet.isCodecConfig) {
+                val configBytes = packet.copyData()
+                packet.release()
+                latestCodecConfig = configBytes
                 drainPackets()
                 hasCodecConfig = true
+                codecConfigSubmitted = false
                 isWaitingForKeyFrame = true
-                if (!packets.offer(packet)) {
-                    packet.release()
+                if (!packets.offerFirst(NALPacket.forCodecConfig(configBytes, packet.receivedAtMs))) {
+                    hasCodecConfig = false
                 }
                 return
             }
@@ -69,7 +75,7 @@ class VideoPlayer(
         initDecoder()
         while (!isStopped) {
             try {
-                packets.poll(250, TimeUnit.MILLISECONDS)?.let(::decode)
+                packets.pollFirst(250, TimeUnit.MILLISECONDS)?.let(::decode)
             } catch (e: InterruptedException) {
                 if (isStopped) {
                     break
@@ -120,7 +126,11 @@ class VideoPlayer(
     }
 
     private fun decode(packet: NALPacket) {
-        val codec = decoder
+        var codec = decoder
+        if (codec == null) {
+            initDecoder()
+            codec = decoder
+        }
         if (codec == null) {
             if (!hasLoggedDecoderMissing) {
                 Log.w(TAG, "decoder unavailable; dropping packet (size=${packet.size}, config=${packet.isCodecConfig}, key=${packet.isKeyFrame})")
@@ -130,6 +140,7 @@ class VideoPlayer(
             return
         }
 
+        var shouldReleasePacket = true
         try {
             // Drain any output that's already cooked. Use 0 timeout — we
             // poll-only here so we never block the input side.
@@ -141,12 +152,15 @@ class VideoPlayer(
             // codec config state — we just drop this one frame and ask for a
             // fresh keyframe. Resetting hasCodecConfig on transient back-pressure
             // (the previous behavior) used to wedge the decoder permanently.
-            val inputBufferIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_USEC)
+            val inputTimeout = if (packet.isCodecConfig) CONFIG_INPUT_TIMEOUT_USEC else INPUT_TIMEOUT_USEC
+            val inputBufferIndex = codec.dequeueInputBuffer(inputTimeout)
             if (inputBufferIndex < 0) {
                 if (DEBUG_FRAMES) {
                     Log.d(TAG, "dequeueInputBuffer timed out")
                 }
-                if (!packet.isCodecConfig) {
+                if (packet.isCodecConfig && requeueCodecConfig(packet)) {
+                    shouldReleasePacket = false
+                } else if (!packet.isCodecConfig) {
                     isWaitingForKeyFrame = true
                 }
                 return
@@ -161,7 +175,10 @@ class VideoPlayer(
                 // bytes to give it). Empty submission is the cleanest way to
                 // release the input buffer back to the codec.
                 codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, 0)
-                if (!packet.isCodecConfig) {
+                if (packet.isCodecConfig) {
+                    hasCodecConfig = false
+                    codecConfigSubmitted = false
+                } else {
                     isWaitingForKeyFrame = true
                 }
                 return
@@ -180,6 +197,7 @@ class VideoPlayer(
             )
 
             if (packet.isCodecConfig) {
+                codecConfigSubmitted = true
                 if (!hasLoggedConfigQueued) {
                     Log.i(TAG, "queued codec config (SPS/PPS, size=${packet.size}) into MediaCodec")
                     hasLoggedConfigQueued = true
@@ -199,12 +217,14 @@ class VideoPlayer(
                 }
             }
         } catch (e: IllegalStateException) {
-            Log.e(TAG, "decoder threw — releasing", e)
-            releaseDecoder()
+            Log.e(TAG, "decoder threw — restarting", e)
+            restartDecoder()
         } catch (e: Exception) {
             Log.e(TAG, "decode error", e)
         } finally {
-            packet.release()
+            if (shouldReleasePacket) {
+                packet.release()
+            }
         }
     }
 
@@ -250,6 +270,9 @@ class VideoPlayer(
     }
 
     private fun enqueueVideoPacket(packet: NALPacket) {
+        if (packet.isKeyFrame && !codecConfigSubmitted) {
+            enqueueCachedCodecConfig()
+        }
         if (offerPacket(packet)) {
             return
         }
@@ -269,17 +292,44 @@ class VideoPlayer(
 
     private fun offerPacket(packet: NALPacket): Boolean {
         return try {
-            packets.offer(packet, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            packets.offerLast(packet, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             false
         }
     }
 
+    private fun requeueCodecConfig(packet: NALPacket): Boolean {
+        synchronized(packets) {
+            drainPendingVideoFrames()
+            return packets.offerFirst(packet)
+        }
+    }
+
+    private fun enqueueCachedCodecConfig() {
+        val config = latestCodecConfig ?: return
+        synchronized(packets) {
+            drainPendingVideoFrames()
+            val queued = NALPacket.forCodecConfig(config, SystemClock.elapsedRealtime())
+            if (!packets.offerFirst(queued)) {
+                queued.release()
+            }
+        }
+    }
+
+    private fun restartDecoder() {
+        releaseDecoder()
+        codecConfigSubmitted = false
+        hasRenderedFirstFrame = false
+        isWaitingForKeyFrame = true
+        initDecoder()
+        enqueueCachedCodecConfig()
+    }
+
     private fun drainPendingVideoFrames() {
         val retainedConfig = ArrayList<NALPacket>(MAX_BUFFERED_FRAMES)
         while (true) {
-            val queuedPacket = packets.poll() ?: break
+            val queuedPacket = packets.pollFirst() ?: break
             if (queuedPacket.isCodecConfig) {
                 retainedConfig.add(queuedPacket)
             } else {
@@ -289,12 +339,12 @@ class VideoPlayer(
                 }
             }
         }
-        retainedConfig.forEach { packets.offer(it) }
+        retainedConfig.asReversed().forEach { packets.offerFirst(it) }
     }
 
     private fun drainPackets() {
         while (true) {
-            packets.poll()?.release() ?: break
+            packets.pollFirst()?.release() ?: break
         }
     }
 
@@ -321,6 +371,7 @@ class VideoPlayer(
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val INPUT_TIMEOUT_USEC = 10_000L
+        private const val CONFIG_INPUT_TIMEOUT_USEC = 100_000L
         // Output drain wait: a bit longer until the first frame surfaces (so
         // warm-up doesn't sit idle), then 0 for steady-state low latency.
         private const val WARMUP_OUTPUT_TIMEOUT_USEC = 8_000L

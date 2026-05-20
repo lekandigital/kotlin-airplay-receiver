@@ -26,6 +26,15 @@ class NALPacket(
     val codecFlags: Int
         get() = if (isCodecConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
 
+    fun copyData(): ByteArray {
+        val copy = ByteArray(size)
+        val duplicate = data.duplicate()
+        duplicate.position(0)
+        duplicate.limit(size)
+        duplicate.get(copy)
+        return copy
+    }
+
     @Synchronized
     fun release() {
         if (pointer != 0L) {
