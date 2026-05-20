@@ -101,14 +101,6 @@ raop_handler_info(raop_conn_t *conn,
 		plist_dict_set_item(root_node, "widthPixels", plist_new_uint(video_width));
 		plist_dict_set_item(root_node, "heightPixels", plist_new_uint(video_height));
 
-		if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
-			plist_dict_remove_item(root_node, "audioType");
-			plist_dict_remove_item(root_node, "audioFormats");
-			plist_dict_remove_item(root_node, "audioInputFormats");
-			plist_dict_remove_item(root_node, "audioOutputFormats");
-			plist_dict_remove_item(root_node, "audioLatencies");
-		}
-
 		uint32_t rsp_len = 0;
 		char* rsp = NULL;
 		plist_to_bin(root_node, &rsp, &rsp_len);
