@@ -107,11 +107,11 @@ class RaopServer(
         if (DEBUG_FRAMES) {
             Log.d(TAG, "onRecvAudioData pcm bytes = $size, pts = $pts")
         }
-        markConnected()
         if (!acceptAudio) {
             NativeMemory.free(nativePointer)
             return
         }
+        lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         onTrafficSample(size)
         val packet = PCMPacket(
             data = buffer,
@@ -214,7 +214,7 @@ class RaopServer(
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         if (!hasConnection) {
             hasConnection = true
-            // Hide the startup overlay as soon as media starts flowing. This is
+            // Hide the startup overlay as soon as video starts flowing. This is
             // the 0.2.12 behavior — the overlay must NOT wait for decoded
             // frames, because on slower devices (Android 8.1 hardware in
             // particular) MediaCodec can take noticeable time to surface the

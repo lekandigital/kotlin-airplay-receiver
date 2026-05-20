@@ -309,27 +309,57 @@ raop_handler_setup(raop_conn_t *conn,
         return;
     }
     plist_t streams_note = plist_dict_get_item(root_node, "streams");
-    if (conn->setup == 0) {
+    plist_t stream_note = NULL;
+    uint64_t stream_type = 0;
+    int has_stream_type = 0;
+    if (streams_note) {
+        stream_note = plist_array_get_item(streams_note, 0);
+        if (stream_note) {
+            plist_t type_note = plist_dict_get_item(stream_note, "type");
+            if (type_note) {
+                plist_get_uint_val(type_note, &stream_type);
+                has_stream_type = 1;
+                logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP stream type = %llu", stream_type);
+            }
+        }
+    }
+    plist_t eiv_note = plist_dict_get_item(root_node, "eiv");
+    plist_t ekey_note = plist_dict_get_item(root_node, "ekey");
+    if (conn->setup == 0 && eiv_note && ekey_note) {
 		unsigned char aesiv[16];
 		unsigned char aeskey[16];
         conn->setup++;
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 1");
         // First setup
-        plist_t eiv_note = plist_dict_get_item(root_node, "eiv");
         char* eiv= NULL;
         uint64_t eiv_len = 0;
         plist_get_data_val(eiv_note, &eiv, &eiv_len);
+        if (!eiv || eiv_len < 16) {
+            logger_log(conn->raop->logger, LOGGER_ERR, "Invalid SETUP eiv");
+            free(eiv);
+            http_response_set_disconnect(response, 1);
+            plist_free(root_node);
+            return;
+        }
         memcpy(aesiv, eiv, 16);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "eiv_len = %llu", eiv_len);
-        plist_t ekey_note = plist_dict_get_item(root_node, "ekey");
         char* ekey= NULL;
         uint64_t ekey_len = 0;
         plist_get_data_val(ekey_note, &ekey, &ekey_len);
+        if (!ekey) {
+            logger_log(conn->raop->logger, LOGGER_ERR, "Invalid SETUP ekey");
+            free(eiv);
+            http_response_set_disconnect(response, 1);
+            plist_free(root_node);
+            return;
+        }
         logger_log(conn->raop->logger, LOGGER_DEBUG, "ekey_len = %llu", ekey_len);
         // Time port
-		uint64_t timing_rport;
+		uint64_t timing_rport = 0;
         plist_t time_note = plist_dict_get_item(root_node, "timingPort");
-        plist_get_uint_val(time_note, &timing_rport);
+        if (time_note) {
+            plist_get_uint_val(time_note, &timing_rport);
+        }
 		logger_log(conn->raop->logger, LOGGER_DEBUG, "timing_rport = %llu", timing_rport);
         // ekey is 72 bytes
         int ret = fairplay_decrypt(conn->fairplay, ekey, aeskey);
@@ -346,17 +376,26 @@ raop_handler_setup(raop_conn_t *conn,
 		if (conn->raop_rtp_mirror) {
 			raop_add_active_mirror(conn->raop, conn->raop_rtp_mirror);
 		}
-    } else if (conn->setup == 1) {
+    } else if ((has_stream_type && stream_type == 110) || (!has_stream_type && conn->setup == 1)) {
 		unsigned short tport=0, dport=0;
-        conn->setup++;
-        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 2");
-		plist_t stream_note = plist_array_get_item(streams_note, 0);
-		plist_t type_note = plist_dict_get_item(stream_note, "type");
-        uint64_t type;
-        plist_get_uint_val(type_note, &type);
-        logger_log(conn->raop->logger, LOGGER_DEBUG, "type = %llu", type);
+        if (conn->setup < 2) {
+            conn->setup = 2;
+        }
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP video");
+        if (!stream_note) {
+            logger_log(conn->raop->logger, LOGGER_ERR, "Missing stream plist for video SETUP");
+            http_response_set_disconnect(response, 1);
+            plist_free(root_node);
+            return;
+        }
 		plist_t stream_id_note = plist_dict_get_item(stream_note, "streamConnectionID");
-		uint64_t streamConnectionID;
+        if (!stream_id_note) {
+            logger_log(conn->raop->logger, LOGGER_ERR, "Missing streamConnectionID for video SETUP");
+            http_response_set_disconnect(response, 1);
+            plist_free(root_node);
+            return;
+        }
+		uint64_t streamConnectionID = 0;
 		plist_get_uint_val(stream_id_note, &streamConnectionID);
         logger_log(conn->raop->logger, LOGGER_DEBUG, "streamConnectionID = %llu", streamConnectionID);
 
@@ -393,20 +432,12 @@ raop_handler_setup(raop_conn_t *conn,
             *response_datalen = len;
         }
         logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d", dport, tport);
-    } else {
-        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP 3");
+    } else if ((has_stream_type && stream_type == 96) || conn->setup >= 2) {
+        logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP audio");
         unsigned short cport = 0, tport = 0, dport = 0;
 
         if (conn->raop->callbacks.audio_accept && !conn->raop->callbacks.audio_accept(conn->raop->callbacks.cls)) {
-            const char *cseq = http_request_get_header(request, "CSeq");
-            logger_log(conn->raop->logger, LOGGER_INFO, "Rejecting audio SETUP because audio is disabled");
-            http_response_reset(response, "RTSP/1.0", 453, "Not Enough Bandwidth");
-            if (cseq) {
-                http_response_add_header(response, "CSeq", cseq);
-            }
-            http_response_add_header(response, "Server", "AirTunes/220.68");
-            plist_free(root_node);
-            return;
+            logger_log(conn->raop->logger, LOGGER_INFO, "Audio SETUP requested while audio is disabled; accepting transport so mirroring can continue");
         }
 
         if (conn->raop_rtp) {
@@ -461,6 +492,9 @@ raop_handler_setup(raop_conn_t *conn,
 		}
 
 		logger_log(conn->raop->logger, LOGGER_INFO, "dport = %d, tport = %d, cport = %d", dport, tport, cport);
+    } else {
+        logger_log(conn->raop->logger, LOGGER_ERR, "Unsupported SETUP request without a known stream type");
+        http_response_set_disconnect(response, 1);
     }
 
     plist_free(root_node);
