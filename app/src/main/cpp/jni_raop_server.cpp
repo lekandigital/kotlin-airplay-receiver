@@ -21,6 +21,7 @@ struct raop_jni_context {
     jmethodID get_video_width;
     jmethodID get_video_height;
     jmethodID on_stream_stopped;
+    jmethodID on_native_stream_status;
 };
 
 static void DetachJniThread(void*) {
@@ -160,6 +161,22 @@ stream_stopped(void *cls)
 }
 
 extern "C" void
+stream_status(void *cls, const char *status)
+{
+    raop_jni_context* context = static_cast<raop_jni_context*>(cls);
+    JNIEnv* jniEnv = GetJniEnv();
+    if (jniEnv == NULL || context == NULL || context->on_native_stream_status == NULL || status == NULL) {
+        return;
+    }
+    jstring javaStatus = jniEnv->NewStringUTF(status);
+    if (javaStatus == NULL) {
+        return;
+    }
+    jniEnv->CallVoidMethod(context->server, context->on_native_stream_status, javaStatus);
+    jniEnv->DeleteLocalRef(javaStatus);
+}
+
+extern "C" void
 video_process(void *cls, h264_decode_struct *data)
 {
     OnRecvVideoData(cls, data);
@@ -199,6 +216,7 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     context->get_video_width = env->GetMethodID(cls, "getVideoWidth", "()I");
     context->get_video_height = env->GetMethodID(cls, "getVideoHeight", "()I");
     context->on_stream_stopped = env->GetMethodID(cls, "onStreamStopped", "()V");
+    context->on_native_stream_status = env->GetMethodID(cls, "onNativeStreamStatus", "(Ljava/lang/String;)V");
     env->DeleteLocalRef(cls);
 
     if (context->server == NULL ||
@@ -207,7 +225,8 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
         context->is_audio_accepted == NULL ||
         context->get_video_width == NULL ||
         context->get_video_height == NULL ||
-        context->on_stream_stopped == NULL) {
+        context->on_stream_stopped == NULL ||
+        context->on_native_stream_status == NULL) {
         if (context->server != NULL) {
             env->DeleteGlobalRef(context->server);
         }
@@ -224,6 +243,7 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     raop_cbs.video_height = video_height;
     raop_cbs.audio_set_volume = audio_set_volume;
     raop_cbs.stream_stopped = stream_stopped;
+    raop_cbs.stream_status = stream_status;
     raop_cbs.video_process = video_process;
 
     raop_t *raop = raop_init(10, &raop_cbs);

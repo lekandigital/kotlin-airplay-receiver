@@ -26,6 +26,7 @@ import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
 
+    private lateinit var airPlayServer: AirPlayServer
     private lateinit var raopServer: RaopServer
     private lateinit var dnsNotify: DNSNotify
     private lateinit var playbackSurface: SurfaceView
@@ -61,6 +62,7 @@ class MainActivity : Activity() {
     private var isStarted = false
     private var isStreaming = false
     private var discoveryStatus = "Discovery starting"
+    private var streamStatus = "Stream idle"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +91,7 @@ class MainActivity : Activity() {
         videoMode = loadVideoMode()
         acceptAudio = loadAcceptAudio()
         audioVolume = loadAudioVolume()
+        airPlayServer = AirPlayServer()
         raopServer = RaopServer(
             playbackSurface,
             ::hideStatus,
@@ -96,6 +99,7 @@ class MainActivity : Activity() {
             ::handleTrafficSample,
             ::handleLatencySample,
             ::handleStreamStopped,
+            ::handleStreamStatus,
             videoMode.width,
             videoMode.height,
             acceptAudio,
@@ -332,7 +336,7 @@ class MainActivity : Activity() {
 
     private fun updateWaitingStatus() {
         startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
-        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode"
+        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode\n$streamStatus"
         discoveryStatusView.text = discoveryStatus
     }
 
@@ -348,8 +352,18 @@ class MainActivity : Activity() {
     private fun hideStatus() {
         runOnUiThread {
             isStreaming = true
+            streamStatus = "First frame rendered"
             startupPanel.visibility = View.GONE
             startupVersionLabel.visibility = View.GONE
+        }
+    }
+
+    private fun handleStreamStatus(status: String) {
+        streamStatus = status
+        runOnUiThread {
+            if (::statusView.isInitialized && !isStreaming) {
+                updateWaitingStatus()
+            }
         }
     }
 
@@ -635,26 +649,37 @@ class MainActivity : Activity() {
 
         startReceiverForegroundService()
         acquireMulticastLock()
+        airPlayServer.startServer()
+        val airplayPort = airPlayServer.port
+        if (airplayPort == 0) {
+            Toast.makeText(applicationContext, "Start the AirPlay service failed", Toast.LENGTH_SHORT).show()
+            handleDiscoveryStatus("AirPlay failed: port unavailable")
+        } else {
+            dnsNotify.registerAirplay(airplayPort)
+        }
+
         raopServer.startServer()
         val raopPort = raopServer.port
         if (raopPort == 0) {
-            Toast.makeText(applicationContext, "Start the receiver service failed", Toast.LENGTH_SHORT).show()
-            handleDiscoveryStatus("AirPlay failed: control port unavailable")
+            Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
+            handleDiscoveryStatus("RAOP failed: port unavailable")
         } else {
-            dnsNotify.registerAirplay(raopPort)
             dnsNotify.registerRaop(raopPort, acceptAudio)
         }
 
         isStarted = true
         applyWakeMode()
-        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, controlPort = $raopPort")
+        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
     }
 
     private fun refreshAnnouncements() {
         acquireMulticastLock()
+        val airplayPort = airPlayServer.port
+        if (airplayPort != 0) {
+            dnsNotify.registerAirplay(airplayPort)
+        }
         val raopPort = raopServer.port
         if (raopPort != 0) {
-            dnsNotify.registerAirplay(raopPort)
             dnsNotify.registerRaop(raopPort, acceptAudio)
         }
     }
@@ -703,6 +728,7 @@ class MainActivity : Activity() {
             return
         }
         dnsNotify.stop()
+        airPlayServer.stopServer()
         raopServer.stopServer()
         isStarted = false
         lastWakeNudgeAtMs = 0L

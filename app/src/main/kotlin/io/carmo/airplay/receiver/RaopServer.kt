@@ -20,6 +20,7 @@ class RaopServer(
     private val onTrafficSample: (Int) -> Unit,
     private val onLatencySample: (Long) -> Unit,
     private val onStreamStoppedCallback: () -> Unit,
+    private val onStreamStatusChanged: (String) -> Unit,
     initialVideoWidth: Int,
     initialVideoHeight: Int,
     initialAcceptAudio: Boolean,
@@ -50,6 +51,8 @@ class RaopServer(
     @Volatile private var cachedCodecConfig: ByteArray? = null
     /** Wall-clock time (elapsedRealtime) when the first video byte arrived. */
     @Volatile private var firstVideoBytesAtMs = 0L
+    /** Wall-clock time (elapsedRealtime) when the first accepted audio byte arrived. */
+    @Volatile private var firstAudioBytesAtMs = 0L
 
     init {
         surfaceView.holder.addCallback(this)
@@ -67,6 +70,7 @@ class RaopServer(
         if (firstVideoBytesAtMs == 0L) {
             firstVideoBytesAtMs = SystemClock.elapsedRealtime()
             scheduleStartupWatchdog()
+            onStreamStatusChanged("Video bytes received")
             Log.i(TAG, "first video bytes received (size=$size, nalType=$nalType)")
         }
         markVideoActivity(buffer, size)
@@ -112,6 +116,10 @@ class RaopServer(
             NativeMemory.free(nativePointer)
             return
         }
+        if (firstAudioBytesAtMs == 0L) {
+            firstAudioBytesAtMs = SystemClock.elapsedRealtime()
+            onStreamStatusChanged("Audio bytes received")
+        }
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         onTrafficSample(size)
         val packet = PCMPacket(
@@ -145,6 +153,9 @@ class RaopServer(
         }
         if (serverId == 0L) {
             serverId = start()
+            if (serverId != 0L) {
+                onStreamStatusChanged("Receiver ready")
+            }
         }
     }
 
@@ -163,7 +174,9 @@ class RaopServer(
         hasConnection = false
         hasStartedVideo = false
         firstVideoBytesAtMs = 0L
+        firstAudioBytesAtMs = 0L
         cachedCodecConfig = null
+        onStreamStatusChanged("Stream idle")
     }
 
     fun setAcceptAudio(acceptAudio: Boolean) {
@@ -201,7 +214,13 @@ class RaopServer(
 
     @Suppress("unused")
     fun onStreamStopped() {
+        onStreamStatusChanged("Stream stopped")
         scheduleStreamStopCheck(STREAM_STOP_GRACE_MS)
+    }
+
+    @Suppress("unused")
+    fun onNativeStreamStatus(status: String) {
+        onStreamStatusChanged(status)
     }
 
     val port: Int
@@ -257,6 +276,7 @@ class RaopServer(
             ::handleVideoFrameRendered
         )
         videoPlayer = newPlayer
+        onStreamStatusChanged("Decoder starting")
         newPlayer.start()
         // Replay cached SPS/PPS so the freshly-created decoder has codec
         // config without waiting for the source to send it again. Without
@@ -295,6 +315,7 @@ class RaopServer(
         hasStartedVideo = true
         mainHandler.removeCallbacks(startupWatchdog)
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        onStreamStatusChanged("First frame rendered")
         onConnectionStarted()
     }
 

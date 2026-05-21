@@ -73,6 +73,7 @@ static void raop_add_active_rtp(raop_t *raop, raop_rtp_t *rtp);
 static void raop_add_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror);
 static void raop_remove_active_rtp(raop_t *raop, raop_rtp_t *rtp);
 static void raop_remove_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror);
+static void conn_notify_stream_status(raop_conn_t *conn, const char *status);
 
 #include "raop_handlers.h"
 
@@ -143,6 +144,17 @@ raop_remove_active_mirror(raop_t *raop, raop_rtp_mirror_t *mirror)
 		if (raop->active_mirrors[i] == mirror) {
 			raop->active_mirrors[i] = NULL;
 		}
+	}
+}
+
+static void
+conn_notify_stream_status(raop_conn_t *conn, const char *status)
+{
+	if (!conn || !status) {
+		return;
+	}
+	if (conn->raop->callbacks.stream_status) {
+		conn->raop->callbacks.stream_status(conn->raop->callbacks.cls, status);
 	}
 }
 
@@ -235,6 +247,8 @@ conn_init(void *opaque, unsigned char *local, int locallen, unsigned char *remot
 	conn->locallen = locallen;
 	conn->remotelen = remotelen;
 
+	conn_notify_stream_status(conn, "Client connected");
+
 	return conn;
 }
 
@@ -284,7 +298,7 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 	} else if (!strcmp(method, "POST") && !strcmp(url, "/feedback")) {
 		handler = &raop_handler_feedback;
 	} else if (!strcmp(method, "RECORD")) {
-        handler = &raop_handler_record;
+		handler = &raop_handler_record;
 	} else if (!strcmp(method, "FLUSH")) {
 		const char *rtpinfo;
 		int next_seq = -1;
@@ -302,6 +316,7 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 			logger_log(conn->raop->logger, LOGGER_WARNING, "RAOP not initialized at FLUSH");
 		}
 	} else if (!strcmp(method, "TEARDOWN")) {
+		conn_notify_stream_status(conn, "Stream teardown received");
 		http_response_add_header(*response, "Connection", "close");
 		int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
 		if (conn->raop_rtp) {
@@ -310,12 +325,12 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 			raop_rtp_destroy(conn->raop_rtp);
 			conn->raop_rtp = NULL;
 		}
-        if (conn->raop_rtp_mirror) {
-            raop_remove_active_mirror(conn->raop, conn->raop_rtp_mirror);
-            /* Destroy our mirror session */
-            raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
-            conn->raop_rtp_mirror = NULL;
-        }
+		if (conn->raop_rtp_mirror) {
+			raop_remove_active_mirror(conn->raop, conn->raop_rtp_mirror);
+			/* Destroy our mirror session */
+			raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
+			conn->raop_rtp_mirror = NULL;
+		}
 		if (had_stream) {
 			conn_notify_stream_stopped(conn);
 		}

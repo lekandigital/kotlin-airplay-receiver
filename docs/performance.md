@@ -36,7 +36,7 @@ The traffic monitor is intentionally modest:
 - Video latency stops when `MediaCodec.releaseOutputBuffer(..., true)` hands the newest decoded output frame to the display surface.
 - The chart uses 30 rolling half-second samples, plots only completed samples, and avoids opaque backgrounds.
 
-The decoder discards the first few rendered outputs after codec setup, and the startup pane remains visible for the first four rendered video outputs after that. This adds only a few frame intervals at stream start, but lets the hardware surface replace stale or partially decoded startup contents before the centered controls disappear.
+The startup pane remains visible while the receiver moves through setup, mirror negotiation, first media bytes, decoder startup, and first rendered frame. It disappears when the first decoded video frame is rendered, keeping the screen from going black while still exposing enough state to debug failed handshakes without log access.
 
 Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver strips audio format details from `/info` and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
 
@@ -69,7 +69,7 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a tiny fixed-size `ArrayBlockingQueue` that preserves codec config while replacing pending video input with only the newest packet before enqueueing.
+- Video uses a tiny fixed-size `LinkedBlockingDeque` that preserves codec config and frame dependency order before decode.
 - After fresh H.264 codec config, video waits for an IDR frame before queueing non-config frame data.
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
 - The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
