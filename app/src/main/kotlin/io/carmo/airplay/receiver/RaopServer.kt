@@ -53,6 +53,7 @@ class RaopServer(
     @Volatile private var firstVideoBytesAtMs = 0L
     /** Wall-clock time (elapsedRealtime) when the first accepted audio byte arrived. */
     @Volatile private var firstAudioBytesAtMs = 0L
+    @Volatile private var lastVideoStatusAtMs = 0L
 
     init {
         surfaceView.holder.addCallback(this)
@@ -67,11 +68,14 @@ class RaopServer(
             Log.d(TAG, "onRecvVideoData dts = $dts, pts = $pts, nalType = $nalType, nal length = $size")
         }
         markMediaTraffic()
+        val now = SystemClock.elapsedRealtime()
         if (firstVideoBytesAtMs == 0L) {
-            firstVideoBytesAtMs = SystemClock.elapsedRealtime()
+            firstVideoBytesAtMs = now
             scheduleStartupWatchdog()
-            onStreamStatusChanged("Video bytes received")
+            reportStreamStatus("Video bytes received", now)
             Log.i(TAG, "first video bytes received (size=$size, nalType=$nalType)")
+        } else if (!hasStartedVideo && now - lastVideoStatusAtMs >= VIDEO_STATUS_INTERVAL_MS) {
+            reportStreamStatus("Video bytes receiving", now)
         }
         markVideoActivity(buffer, size)
         onTrafficSample(size)
@@ -175,6 +179,7 @@ class RaopServer(
         hasStartedVideo = false
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
+        lastVideoStatusAtMs = 0L
         cachedCodecConfig = null
         onStreamStatusChanged("Stream idle")
     }
@@ -319,6 +324,11 @@ class RaopServer(
         onConnectionStarted()
     }
 
+    private fun reportStreamStatus(status: String, now: Long = SystemClock.elapsedRealtime()) {
+        lastVideoStatusAtMs = now
+        onStreamStatusChanged(status)
+    }
+
     /**
      * Watchdog that logs when video bytes are arriving but no decoded frame has
      * reached the surface yet. It deliberately does not hide the startup panel:
@@ -390,6 +400,7 @@ class RaopServer(
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val VIDEO_IDLE_WAKE_MS = 10_000L
+        private const val VIDEO_STATUS_INTERVAL_MS = 1_000L
         // If video bytes have been arriving for this long with no rendered
         // frame, give up waiting for onFrameRendered and unblock the UI. The
         // surface will simply show whatever the decoder eventually paints.
