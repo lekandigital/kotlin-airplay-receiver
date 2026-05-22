@@ -39,8 +39,8 @@ android {
         minSdk 27
         targetSdk 27
         ndkVersion "25.1.8937393"
-        versionCode 46
-        versionName "0.4.9"
+        versionCode 47
+        versionName "0.4.10"
         externalNativeBuild {
             cmake {
                 abiFilters "armeabi-v7a", "arm64-v8a"

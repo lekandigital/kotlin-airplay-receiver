@@ -9,7 +9,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import io.carmo.airplay.receiver.model.NALPacket
-import java.util.concurrent.LinkedBlockingDeque
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class VideoPlayer(
@@ -21,18 +21,12 @@ class VideoPlayer(
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
-    private val packets = LinkedBlockingDeque<NALPacket>(MAX_BUFFERED_FRAMES)
+    private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
     @Volatile private var isStopped = false
-    @Volatile private var hasCodecConfig = false
-    @Volatile private var codecConfigSubmitted = false
-    @Volatile private var isWaitingForKeyFrame = true
     @Volatile private var hasRenderedFirstFrame = false
-    @Volatile private var latestCodecConfig: ByteArray? = null
 
     // Diagnostic flags — log critical lifecycle events exactly once per player.
-    private var hasLoggedConfigQueued = false
-    private var hasLoggedKeyFrameQueued = false
     private var hasLoggedFirstRender = false
     private var hasLoggedDecoderMissing = false
 
@@ -42,31 +36,18 @@ class VideoPlayer(
     fun addPacket(packet: NALPacket) {
         synchronized(packets) {
             if (packet.isCodecConfig) {
-                val configBytes = packet.copyData()
-                packet.release()
-                latestCodecConfig = configBytes
                 drainPackets()
-                hasCodecConfig = true
-                codecConfigSubmitted = false
-                isWaitingForKeyFrame = true
-                if (!packets.offerFirst(NALPacket.forCodecConfig(configBytes, packet.receivedAtMs))) {
-                    hasCodecConfig = false
+                if (!packets.offer(packet)) {
+                    packet.release()
                 }
                 return
             }
 
-            if (!hasCodecConfig) {
+            trimBacklog()
+            if (!packets.offer(packet)) {
                 packet.release()
                 return
             }
-            if (isWaitingForKeyFrame) {
-                if (!packet.isKeyFrame) {
-                    packet.release()
-                    return
-                }
-                isWaitingForKeyFrame = false
-            }
-            enqueueVideoPacket(packet)
         }
     }
 
@@ -75,7 +56,7 @@ class VideoPlayer(
         initDecoder()
         while (!isStopped) {
             try {
-                packets.pollFirst(250, TimeUnit.MILLISECONDS)?.let(::decode)
+                packets.poll(250, TimeUnit.MILLISECONDS)?.let(::decode)
             } catch (e: InterruptedException) {
                 if (isStopped) {
                     break
@@ -107,13 +88,6 @@ class VideoPlayer(
                 videoFormat.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 videoFormat.setFloat(MediaFormat.KEY_OPERATING_RATE, VIDEO_OPERATING_RATE)
             }
-            // KEY_LOW_LATENCY (API 30+) tells the decoder to skip its output
-            // reorder buffer entirely. AirPlay mirroring sends in display order
-            // with no B-frames, so this is safe and shaves several frames of
-            // pipeline latency once the codec is past its initial fill.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                videoFormat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
 
             codec.configure(videoFormat, surface, null, 0)
             codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
@@ -133,98 +107,48 @@ class VideoPlayer(
         }
         if (codec == null) {
             if (!hasLoggedDecoderMissing) {
-                Log.w(TAG, "decoder unavailable; dropping packet (size=${packet.size}, config=${packet.isCodecConfig}, key=${packet.isKeyFrame})")
+                Log.w(TAG, "decoder unavailable; dropping packet (size=${packet.size}, config=${packet.isCodecConfig})")
                 hasLoggedDecoderMissing = true
             }
             packet.release()
             return
         }
 
-        var shouldReleasePacket = true
         try {
-            // Drain any output that's already cooked. Use 0 timeout — we
-            // poll-only here so we never block the input side.
             if (drainOutput(codec, 0L)) {
                 signalFrameRendered()
             }
 
-            // Wait briefly for an input slot. If none is free we DO NOT trash
-            // codec config state — we just drop this one frame and ask for a
-            // fresh keyframe. Resetting hasCodecConfig on transient back-pressure
-            // (the previous behavior) used to wedge the decoder permanently.
-            val inputTimeout = if (packet.isCodecConfig) CONFIG_INPUT_TIMEOUT_USEC else INPUT_TIMEOUT_USEC
-            val inputBufferIndex = codec.dequeueInputBuffer(inputTimeout)
-            if (inputBufferIndex < 0) {
-                if (DEBUG_FRAMES) {
-                    Log.d(TAG, "dequeueInputBuffer timed out")
+            val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
+            if (inputBufferIndex >= 0) {
+                val inputBuffer = codec.getInputBuffer(inputBufferIndex)
+                if (inputBuffer == null || packet.size > inputBuffer.capacity()) {
+                    if (DEBUG_FRAMES) {
+                        Log.d(TAG, "dropping oversized NAL: ${packet.size}")
+                    }
+                    codec.queueInputBuffer(inputBufferIndex, 0, 0, packet.pts, 0)
+                    return
                 }
-                if (packet.isCodecConfig && requeueCodecConfig(packet)) {
-                    shouldReleasePacket = false
-                } else if (!packet.isCodecConfig) {
-                    isWaitingForKeyFrame = true
-                }
-                return
+
+                inputBuffer.clear()
+                packet.data.position(0)
+                packet.data.limit(packet.size)
+                inputBuffer.put(packet.data)
+                codec.queueInputBuffer(inputBufferIndex, 0, packet.size, packet.presentationTimeUs, packet.codecFlags)
+            } else if (DEBUG_FRAMES) {
+                Log.d(TAG, "dequeueInputBuffer failed")
             }
 
-            val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-            if (inputBuffer == null || packet.size > inputBuffer.capacity()) {
-                if (DEBUG_FRAMES) {
-                    Log.d(TAG, "dropping oversized NAL: size=${packet.size}, capacity=${inputBuffer?.capacity()}")
-                }
-                // Free the slot WITHOUT a CODEC_CONFIG flag (we don't have config
-                // bytes to give it). Empty submission is the cleanest way to
-                // release the input buffer back to the codec.
-                codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, 0)
-                if (packet.isCodecConfig) {
-                    hasCodecConfig = false
-                    codecConfigSubmitted = false
-                } else {
-                    isWaitingForKeyFrame = true
-                }
-                return
-            }
-
-            inputBuffer.clear()
-            packet.data.position(0)
-            packet.data.limit(packet.size)
-            inputBuffer.put(packet.data)
-            codec.queueInputBuffer(
-                inputBufferIndex,
-                0,
-                packet.size,
-                packet.presentationTimeUs,
-                packet.codecFlags
-            )
-
-            if (packet.isCodecConfig) {
-                codecConfigSubmitted = true
-                if (!hasLoggedConfigQueued) {
-                    Log.i(TAG, "queued codec config (SPS/PPS, size=${packet.size}) into MediaCodec")
-                    hasLoggedConfigQueued = true
-                }
-            } else {
-                if (packet.isKeyFrame && !hasLoggedKeyFrameQueued) {
-                    Log.i(TAG, "queued first IDR (size=${packet.size}, pts=${packet.presentationTimeUs}us)")
-                    hasLoggedKeyFrameQueued = true
-                }
-                // Drain output. Use a longer wait until we've rendered something
-                // (helps surface the very first frame promptly), then drop to 0
-                // for steady-state low latency.
-                val outputWait = if (hasRenderedFirstFrame) STEADY_OUTPUT_TIMEOUT_USEC else WARMUP_OUTPUT_TIMEOUT_USEC
-                if (drainOutput(codec, outputWait)) {
-                    signalFrameRendered()
-                    onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
-                }
+            if (!packet.isCodecConfig && drainOutput(codec, TIMEOUT_USEC)) {
+                signalFrameRendered()
+                onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
         } catch (e: IllegalStateException) {
-            Log.e(TAG, "decoder threw — restarting", e)
-            restartDecoder()
+            Log.e(TAG, "decode error", e)
         } catch (e: Exception) {
             Log.e(TAG, "decode error", e)
         } finally {
-            if (shouldReleasePacket) {
-                packet.release()
-            }
+            packet.release()
         }
     }
 
@@ -269,82 +193,25 @@ class VideoPlayer(
         return false
     }
 
-    private fun enqueueVideoPacket(packet: NALPacket) {
-        if (packet.isKeyFrame && !codecConfigSubmitted) {
-            enqueueCachedCodecConfig()
-        }
-        if (offerPacket(packet)) {
-            return
-        }
-
-        if (packet.isKeyFrame) {
-            drainPendingVideoFrames()
-            isWaitingForKeyFrame = false
-            if (!offerPacket(packet)) {
-                packet.release()
-            }
-            return
-        }
-
-        isWaitingForKeyFrame = true
-        packet.release()
-    }
-
-    private fun offerPacket(packet: NALPacket): Boolean {
-        return try {
-            packets.offerLast(packet, QUEUE_OFFER_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        }
-    }
-
-    private fun requeueCodecConfig(packet: NALPacket): Boolean {
-        synchronized(packets) {
-            drainPendingVideoFrames()
-            return packets.offerFirst(packet)
-        }
-    }
-
-    private fun enqueueCachedCodecConfig() {
-        val config = latestCodecConfig ?: return
-        synchronized(packets) {
-            drainPendingVideoFrames()
-            val queued = NALPacket.forCodecConfig(config, SystemClock.elapsedRealtime())
-            if (!packets.offerFirst(queued)) {
-                queued.release()
-            }
-        }
-    }
-
-    private fun restartDecoder() {
-        releaseDecoder()
-        codecConfigSubmitted = false
-        hasRenderedFirstFrame = false
-        isWaitingForKeyFrame = true
-        initDecoder()
-        enqueueCachedCodecConfig()
-    }
-
-    private fun drainPendingVideoFrames() {
-        val retainedConfig = ArrayList<NALPacket>(MAX_BUFFERED_FRAMES)
-        while (true) {
-            val queuedPacket = packets.pollFirst() ?: break
-            if (queuedPacket.isCodecConfig) {
-                retainedConfig.add(queuedPacket)
-            } else {
-                queuedPacket.release()
+    private fun trimBacklog() {
+        while (packets.size >= MAX_QUEUED_FRAMES) {
+            val packet = packets.peek() ?: return
+            if (packet.isCodecConfig) {
                 if (DEBUG_FRAMES) {
-                    Log.d(TAG, "dropped queued video frame")
+                    Log.d(TAG, "preserving codec config; dropping incoming video frame")
                 }
+                return
+            }
+            packets.poll()?.release() ?: return
+            if (DEBUG_FRAMES) {
+                Log.d(TAG, "video queue full; dropped oldest frame")
             }
         }
-        retainedConfig.asReversed().forEach { packets.offerFirst(it) }
     }
 
     private fun drainPackets() {
         while (true) {
-            packets.pollFirst()?.release() ?: break
+            packets.poll()?.release() ?: break
         }
     }
 
@@ -364,18 +231,11 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        // Small queue keeps us close to live. The 0.2.12 tip used 2; we allow
-        // a little more headroom for momentary jitter.
         private const val MAX_BUFFERED_FRAMES = 4
-        private const val QUEUE_OFFER_TIMEOUT_MS = 5L
+        private const val MAX_QUEUED_FRAMES = 3
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
-        private const val INPUT_TIMEOUT_USEC = 10_000L
-        private const val CONFIG_INPUT_TIMEOUT_USEC = 100_000L
-        // Output drain wait: a bit longer until the first frame surfaces (so
-        // warm-up doesn't sit idle), then 0 for steady-state low latency.
-        private const val WARMUP_OUTPUT_TIMEOUT_USEC = 8_000L
-        private const val STEADY_OUTPUT_TIMEOUT_USEC = 0L
+        private const val TIMEOUT_USEC = 1000L
 
         private fun decoderSupportsAdaptivePlayback(decoderInfo: MediaCodecInfo, mimeType: String): Boolean {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
