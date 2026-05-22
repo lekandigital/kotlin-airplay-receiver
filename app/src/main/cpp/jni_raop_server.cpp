@@ -17,7 +17,6 @@ struct raop_jni_context {
     jobject server;
     jmethodID on_recv_audio_data;
     jmethodID on_recv_video_data;
-    jmethodID is_audio_accepted;
     jmethodID get_video_width;
     jmethodID get_video_height;
     jmethodID on_stream_stopped;
@@ -108,17 +107,6 @@ audio_process(void *cls, pcm_data_struct *data)
 }
 
 extern "C" int
-audio_accept(void *cls)
-{
-    raop_jni_context* context = static_cast<raop_jni_context*>(cls);
-    JNIEnv* jniEnv = GetJniEnv();
-    if (jniEnv == NULL || context == NULL || context->is_audio_accepted == NULL) {
-        return 1;
-    }
-    return jniEnv->CallBooleanMethod(context->server, context->is_audio_accepted) ? 1 : 0;
-}
-
-extern "C" int
 video_width(void *cls)
 {
     raop_jni_context* context = static_cast<raop_jni_context*>(cls);
@@ -195,7 +183,6 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     jclass cls = env->GetObjectClass(object);
     context->on_recv_audio_data = env->GetMethodID(cls, "onRecvAudioData", "(Ljava/nio/ByteBuffer;IJJ)V");
     context->on_recv_video_data = env->GetMethodID(cls, "onRecvVideoData", "(Ljava/nio/ByteBuffer;IJIJJ)V");
-    context->is_audio_accepted = env->GetMethodID(cls, "isAudioAccepted", "()Z");
     context->get_video_width = env->GetMethodID(cls, "getVideoWidth", "()I");
     context->get_video_height = env->GetMethodID(cls, "getVideoHeight", "()I");
     context->on_stream_stopped = env->GetMethodID(cls, "onStreamStopped", "()V");
@@ -204,7 +191,6 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     if (context->server == NULL ||
         context->on_recv_audio_data == NULL ||
         context->on_recv_video_data == NULL ||
-        context->is_audio_accepted == NULL ||
         context->get_video_width == NULL ||
         context->get_video_height == NULL ||
         context->on_stream_stopped == NULL) {
@@ -219,7 +205,6 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     memset(&raop_cbs, 0, sizeof(raop_cbs));
     raop_cbs.cls = context;
     raop_cbs.audio_process = audio_process;
-    raop_cbs.audio_accept = audio_accept;
     raop_cbs.video_width = video_width;
     raop_cbs.video_height = video_height;
     raop_cbs.audio_set_volume = audio_set_volume;

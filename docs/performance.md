@@ -96,8 +96,8 @@ Video still needs one copy into `MediaCodec` input buffers. Removing that would 
 For best results on the target device:
 
 - Pick the stream resolution and display policy on the startup screen before connecting; both choices are remembered locally.
-- Leave `Accept audio` checked to play audio; clear it before connecting to reject audio setup from the sender.
-- Swipe vertically from the right edge to adjust local audio volume when audio is accepted.
+- Audio is always accepted and advertised; use the volume control to adjust playback.
+- Swipe vertically from the right edge to adjust local audio volume while streaming.
 - Drag in from the top-right corner to show the traffic monitor; tap the monitor to hide it.
 - Expect Receiver to close when the sender disconnects; relaunch it from Android when the device should listen again.
 - Interpret traffic monitor latency as local receiver pressure. It is useful for spotting queue/decode stalls, but not for comparing sender capture or network delay.

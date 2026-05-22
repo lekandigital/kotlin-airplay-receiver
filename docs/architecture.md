@@ -47,7 +47,7 @@ The display wake policy is stored in local preferences:
 - `Always awake` keeps the window and display awake while Receiver is active.
 - `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
 
-Audio is disabled by default because Receiver prioritizes minimum video latency. Audio acceptance is stored in local preferences, while volume follows Android's media stream volume. If `Accept audio` is off before connection, the RAOP DNS-SD TXT record omits audio format fields, `/info` strips audio format and latency keys, and the native RAOP handler still rejects audio `SETUP` as a fallback instead of merely muting playback. If decoded audio still arrives after a race or client retry, `RaopServer` frees the PCM buffer immediately. If audio is accepted and a stream is active, a right-edge vertical swipe adjusts Android media volume and displays a transient blue vertical volume bar over the video.
+Receiver always advertises and accepts AirPlay audio so sender capability negotiation stays simple and consistent. Volume follows Android's media stream volume. When a stream is active, a right-edge vertical swipe adjusts Android media volume and displays a transient blue vertical volume bar over the video.
 
 `ReceiverForegroundService` is a minimal foreground service used to keep Android treating Receiver as active while it is running. It owns only the ongoing status notification; the media servers still live in `MainActivity`.
 
@@ -125,8 +125,8 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 ## Audio Flow
 
 1. The native RTP socket receives encrypted audio packets.
-2. If audio is disabled, the native RAOP handler rejects audio setup before RTP audio starts.
-3. Otherwise, the native RAOP buffer decrypts and decodes AAC to PCM.
+2. Native RAOP accepts audio setup and starts RTP audio alongside mirroring when the sender requests it.
+3. The native RAOP buffer decrypts and decodes AAC to PCM.
 4. JNI copies PCM samples into a native-owned direct buffer and invokes `RaopServer.onRecvAudioData`.
 5. `RaopServer` records traffic, stamps the local receive time, and enqueues a `PCMPacket` into `AudioPlayer`.
 6. `AudioPlayer` writes PCM samples into `AudioTrack` from the direct buffer at the configured local volume, reports receiver-side latency, and frees the native packet buffer.

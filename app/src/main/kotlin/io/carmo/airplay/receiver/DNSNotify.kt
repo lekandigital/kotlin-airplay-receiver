@@ -45,10 +45,10 @@ class DNSNotify(
         airplayRegister = NsdRegister(nsdManager, deviceName, serviceType, port, attributes, AIRPLAY_LABEL, ::updateRegistrationStatus)
     }
 
-    fun registerRaop(port: Int, acceptAudio: Boolean) {
-        Log.d(TAG, "registerRaop port = $port, acceptAudio = $acceptAudio")
-        val attributes = mutableMapOf(
-            "da" to acceptAudio.toString(),
+    fun registerRaop(port: Int) {
+        Log.d(TAG, "registerRaop port = $port")
+        val attributes = mapOf(
+            "da" to "true",
             "et" to "0,3,5",
             "vv" to "2",
             "ft" to "0x5A7FFFF7,0x1E",
@@ -61,15 +61,13 @@ class DNSNotify(
             "sf" to "0x4",
             "vs" to "220.68",
             "vn" to "65537",
-            "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7"
+            "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
+            "ch" to "2",
+            "cn" to "0,1,2,3",
+            "md" to "0,1,2",
+            "sr" to "44100",
+            "ss" to "16"
         )
-        if (acceptAudio) {
-            attributes["ch"] = "2"
-            attributes["cn"] = "0,1,2,3"
-            attributes["md"] = "0,1,2"
-            attributes["sr"] = "44100"
-            attributes["ss"] = "16"
-        }
         val serviceName = raopServiceName()
         val serviceType = "_raop._tcp."
         if (raopRegister?.matches(serviceName, serviceType, port, attributes) == true) {

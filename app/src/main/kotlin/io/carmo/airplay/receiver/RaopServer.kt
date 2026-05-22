@@ -7,7 +7,6 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import io.carmo.airplay.receiver.model.NALPacket
-import io.carmo.airplay.receiver.model.NativeMemory
 import io.carmo.airplay.receiver.model.PCMPacket
 import io.carmo.airplay.receiver.player.AudioPlayer
 import io.carmo.airplay.receiver.player.VideoPlayer
@@ -23,7 +22,6 @@ class RaopServer(
     private val onStreamStatusChanged: (String) -> Unit,
     initialVideoWidth: Int,
     initialVideoHeight: Int,
-    initialAcceptAudio: Boolean,
     initialAudioVolume: Float
 ) : SurfaceHolder.Callback {
 
@@ -35,7 +33,6 @@ class RaopServer(
     @Volatile private var lastMediaPacketAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
-    @Volatile private var acceptAudio = initialAcceptAudio
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var hasConnection = false
     @Volatile private var hasStartedVideo = false
@@ -57,9 +54,7 @@ class RaopServer(
 
     init {
         surfaceView.holder.addCallback(this)
-        if (acceptAudio) {
-            ensureAudioPlayer()
-        }
+        ensureAudioPlayer()
     }
 
     @Suppress("unused")
@@ -116,10 +111,6 @@ class RaopServer(
         if (DEBUG_FRAMES) {
             Log.d(TAG, "onRecvAudioData pcm bytes = $size, pts = $pts")
         }
-        if (!acceptAudio) {
-            NativeMemory.free(nativePointer)
-            return
-        }
         markMediaTraffic()
         if (firstAudioBytesAtMs == 0L) {
             firstAudioBytesAtMs = SystemClock.elapsedRealtime()
@@ -152,9 +143,7 @@ class RaopServer(
     }
 
     fun startServer() {
-        if (acceptAudio) {
-            ensureAudioPlayer()
-        }
+        ensureAudioPlayer()
         if (serverId == 0L) {
             serverId = start()
             if (serverId != 0L) {
@@ -184,16 +173,6 @@ class RaopServer(
         onStreamStatusChanged("Stream idle")
     }
 
-    fun setAcceptAudio(acceptAudio: Boolean) {
-        this.acceptAudio = acceptAudio
-        if (acceptAudio) {
-            ensureAudioPlayer()
-        } else {
-            audioPlayer?.stopPlay()
-            audioPlayer = null
-        }
-    }
-
     fun setVideoMode(width: Int, height: Int) {
         videoWidth = width
         videoHeight = height
@@ -207,9 +186,6 @@ class RaopServer(
         audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
         audioPlayer?.setVolume(audioVolume)
     }
-
-    @Suppress("unused")
-    fun isAudioAccepted(): Boolean = acceptAudio
 
     @Suppress("unused")
     fun getVideoWidth(): Int = videoWidth

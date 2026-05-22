@@ -181,22 +181,11 @@
                 android:textSize="14sp" />
         </RadioGroup>
 
-        <CheckBox
-            android:id="@+id/accept_audio"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:buttonTint="#E6FFFFFF"
-            android:checked="true"
-            android:text="@string/accept_audio"
-            android:textColor="#E6FFFFFF"
-            android:textSize="14sp" />
-
         <TextView
             android:id="@+id/audio_volume_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="14dp"
             android:fontFamily="sans-serif-medium"
             android:textColor="#FF7DB7FF"
             android:textSize="13sp" />

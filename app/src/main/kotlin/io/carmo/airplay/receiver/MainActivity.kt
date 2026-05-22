@@ -16,7 +16,6 @@ import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
-import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.RadioGroup
@@ -36,7 +35,6 @@ class MainActivity : Activity() {
     private lateinit var discoveryStatusView: TextView
     private lateinit var videoModeGroup: RadioGroup
     private lateinit var wakeModeGroup: RadioGroup
-    private lateinit var acceptAudioCheckbox: CheckBox
     private lateinit var audioVolumeLabel: TextView
     private lateinit var audioVolumeBar: ProgressBar
     private lateinit var audioVolumeOverlay: View
@@ -49,7 +47,6 @@ class MainActivity : Activity() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var videoMode = VideoMode.HD
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
-    private var acceptAudio = true
     private var audioVolume = DEFAULT_AUDIO_VOLUME
     private var lastWakeNudgeAtMs = 0L
     private var volumeGestureStartY = 0f
@@ -76,7 +73,6 @@ class MainActivity : Activity() {
         discoveryStatusView = findViewById(R.id.discovery_status)
         videoModeGroup = findViewById(R.id.video_mode_group)
         wakeModeGroup = findViewById(R.id.wake_mode_group)
-        acceptAudioCheckbox = findViewById(R.id.accept_audio)
         audioVolumeLabel = findViewById(R.id.audio_volume_label)
         audioVolumeBar = findViewById(R.id.audio_volume_bar)
         audioVolumeOverlay = findViewById(R.id.audio_volume_overlay)
@@ -89,7 +85,6 @@ class MainActivity : Activity() {
         configureControlLayer()
 
         videoMode = loadVideoMode()
-        acceptAudio = loadAcceptAudio()
         audioVolume = loadAudioVolume()
         airPlayServer = AirPlayServer()
         raopServer = RaopServer(
@@ -102,7 +97,6 @@ class MainActivity : Activity() {
             ::handleStreamStatus,
             videoMode.width,
             videoMode.height,
-            acceptAudio,
             audioVolume
         )
         dnsNotify = DNSNotify(this, ::handleDiscoveryStatus)
@@ -398,19 +392,6 @@ class MainActivity : Activity() {
     }
 
     private fun configureAudioControls() {
-        acceptAudioCheckbox.isChecked = acceptAudio
-        acceptAudioCheckbox.setOnCheckedChangeListener { _, isChecked ->
-            acceptAudio = isChecked
-            saveAcceptAudio(isChecked)
-            raopServer.setAcceptAudio(isChecked)
-            if (isStarted) {
-                val port = raopServer.port
-                if (port != 0) {
-                    dnsNotify.registerRaop(port, isChecked)
-                }
-            }
-            updateAudioVolumeUi()
-        }
         updateAudioVolumeUi()
     }
 
@@ -440,18 +421,6 @@ class MainActivity : Activity() {
             .apply()
     }
 
-    private fun loadAcceptAudio(): Boolean {
-        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-        return preferences.getBoolean(PREFERENCE_ACCEPT_AUDIO, false)
-    }
-
-    private fun saveAcceptAudio(acceptAudio: Boolean) {
-        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(PREFERENCE_ACCEPT_AUDIO, acceptAudio)
-            .apply()
-    }
-
     private fun loadAudioVolume(): Float {
         val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
         if (maxVolume <= 0) {
@@ -467,9 +436,7 @@ class MainActivity : Activity() {
 
     private fun setAudioVolume(volume: Float, persist: Boolean) {
         audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
-        if (acceptAudio) {
-            audioVolume = applySystemAudioVolume(audioVolume)
-        }
+        audioVolume = applySystemAudioVolume(audioVolume)
         if (persist) {
             saveAudioVolume(audioVolume)
         }
@@ -496,16 +463,12 @@ class MainActivity : Activity() {
             audioVolume = loadAudioVolume()
         }
         val progress = (audioVolume * 100).toInt()
-        val label = if (acceptAudio) {
-            "Volume $progress%"
-        } else {
-            "Audio off"
-        }
+        val label = "Volume $progress%"
         audioVolumeLabel.text = label
-        audioVolumeBar.progress = if (acceptAudio) progress else 0
-        audioVolumeBar.isEnabled = acceptAudio
+        audioVolumeBar.progress = progress
+        audioVolumeBar.isEnabled = true
         audioVolumeOverlayLabel.text = label
-        audioVolumeOverlayBar.progress = if (acceptAudio) progress else 0
+        audioVolumeOverlayBar.progress = progress
     }
 
     private fun showAudioVolumeOverlay() {
@@ -607,16 +570,11 @@ class MainActivity : Activity() {
                     return false
                 }
                 isAdjustingVolume = true
-                if (acceptAudio) {
-                    setAudioVolume(volumeGestureStartLevel + verticalDrag / range, persist = false)
-                } else {
-                    updateAudioVolumeUi()
-                    showAudioVolumeOverlay()
-                }
+                setAudioVolume(volumeGestureStartLevel + verticalDrag / range, persist = false)
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (isAdjustingVolume && acceptAudio) {
+                if (isAdjustingVolume) {
                     saveAudioVolume(audioVolume)
                 }
                 val consumed = isAdjustingVolume
@@ -664,7 +622,7 @@ class MainActivity : Activity() {
             Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
             handleDiscoveryStatus("RAOP failed: port unavailable")
         } else {
-            dnsNotify.registerRaop(raopPort, acceptAudio)
+            dnsNotify.registerRaop(raopPort)
         }
 
         isStarted = true
@@ -680,7 +638,7 @@ class MainActivity : Activity() {
         }
         val raopPort = raopServer.port
         if (raopPort != 0) {
-            dnsNotify.registerRaop(raopPort, acceptAudio)
+            dnsNotify.registerRaop(raopPort)
         }
     }
 
@@ -785,7 +743,6 @@ class MainActivity : Activity() {
         private const val PREFERENCES_NAME = "receiver"
         private const val PREFERENCE_VIDEO_MODE_V2 = "video_mode_v2"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
-        private const val PREFERENCE_ACCEPT_AUDIO = "accept_audio"
         private const val DEBUG_CODECS = false
 
         @Suppress("DEPRECATION")
