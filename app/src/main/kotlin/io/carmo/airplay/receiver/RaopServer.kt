@@ -29,7 +29,6 @@ class RaopServer(
     private var audioPlayer: AudioPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var serverId: Long = 0
-    private var lastVideoActivityAtMs = 0L
     @Volatile private var lastMediaPacketAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
@@ -72,7 +71,7 @@ class RaopServer(
         } else if (!hasStartedVideo && now - lastVideoStatusAtMs >= VIDEO_STATUS_INTERVAL_MS) {
             reportStreamStatus("Video bytes receiving", now)
         }
-        markVideoActivity(buffer, size)
+        markVideoActivity()
         onTrafficSample(size)
 
         // Capture SPS/PPS so we can replay it into any future VideoPlayer
@@ -162,7 +161,6 @@ class RaopServer(
         stopVideoPlayer()
         audioPlayer?.stopPlay()
         audioPlayer = null
-        lastVideoActivityAtMs = 0L
         lastMediaPacketAtMs = 0L
         hasConnection = false
         hasStartedVideo = false
@@ -323,43 +321,8 @@ class RaopServer(
         mainHandler.postDelayed(startupWatchdog, STARTUP_WATCHDOG_MS)
     }
 
-    private fun markVideoActivity(buffer: ByteBuffer, size: Int) {
-        val now = SystemClock.elapsedRealtime()
-        val resumedAfterIdle = lastVideoActivityAtMs == 0L || now - lastVideoActivityAtMs >= VIDEO_IDLE_WAKE_MS
-        lastVideoActivityAtMs = now
-        onVideoActivity(resumedAfterIdle || hasMajorVideoUpdate(buffer, size))
-    }
-
-    private fun hasMajorVideoUpdate(buffer: ByteBuffer, size: Int): Boolean {
-        var index = 0
-        while (index + 3 < size) {
-            val startCodeLength = when {
-                index + 3 < size &&
-                    buffer.get(index) == START_CODE_BYTE &&
-                    buffer.get(index + 1) == START_CODE_BYTE &&
-                    buffer.get(index + 2) == START_CODE_ONE -> 3
-                index + 4 < size &&
-                    buffer.get(index) == START_CODE_BYTE &&
-                    buffer.get(index + 1) == START_CODE_BYTE &&
-                    buffer.get(index + 2) == START_CODE_BYTE &&
-                    buffer.get(index + 3) == START_CODE_ONE -> 4
-                else -> 0
-            }
-
-            if (startCodeLength > 0) {
-                val nalHeaderIndex = index + startCodeLength
-                if (nalHeaderIndex < size) {
-                    when (buffer.get(nalHeaderIndex).toInt() and NAL_TYPE_MASK) {
-                        NAL_TYPE_IDR, NAL_TYPE_SPS, NAL_TYPE_PPS -> return true
-                    }
-                }
-                index = nalHeaderIndex + 1
-            } else {
-                index++
-            }
-        }
-
-        return false
+    private fun markVideoActivity() {
+        onVideoActivity(true)
     }
 
     companion object {
@@ -369,7 +332,6 @@ class RaopServer(
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val STREAM_STOP_GRACE_MS = 5_000L
-        private const val VIDEO_IDLE_WAKE_MS = 10_000L
         private const val VIDEO_STATUS_INTERVAL_MS = 1_000L
         // If video bytes have been arriving for this long with no rendered
         // frame, give up waiting for onFrameRendered and unblock the UI. The
@@ -378,13 +340,7 @@ class RaopServer(
         // The watchdog only fires if traffic is recent; avoids spuriously
         // hiding the panel after a long idle gap.
         private const val STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS = 2_000L
-        private const val NAL_TYPE_MASK = 0x1F
-        private const val NAL_TYPE_IDR = 5
-        private const val NAL_TYPE_SPS = 7
-        private const val NAL_TYPE_PPS = 8
         private const val NAL_TYPE_CODEC_CONFIG = 0
-        private const val START_CODE_BYTE: Byte = 0
-        private const val START_CODE_ONE: Byte = 1
 
         init {
             System.loadLibrary("raop_server")

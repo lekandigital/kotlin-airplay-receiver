@@ -21,10 +21,10 @@ The app runs a small foreground service while active so Android treats Receiver 
 The startup screen also exposes three display policies:
 
 - `OS default`: no receiver wake lock or keep-screen-on window flag.
-- `Always awake`: sets `FLAG_KEEP_SCREEN_ON` and holds a screen wake lock while Receiver is active.
-- `Wake on activity`: allows normal display sleep, then briefly wakes and brings Receiver forward when major video activity arrives.
+- `Always awake`: sets keep-screen-on on the window, decor view, and playback surface, and holds a screen wake lock while Receiver is active.
+- `Wake on activity`: allows normal display sleep, then briefly refreshes a wake lock from throttled video packet activity and brings Receiver forward if focus was lost.
 
-Major video activity means the first video frame after an idle period, an H.264 IDR frame, or SPS/PPS stream configuration data.
+Video activity means decoded-stream packet traffic from the mirror path, throttled so the UI thread is not touched for every frame.
 
 The optional traffic monitor is hidden by default and rendered as a transparent overlay. It charts recent media throughput with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus receiver-side latency from Kotlin packet receipt to the audio write or video render handoff. These latency numbers measure Receiver's local pipeline, not sender-to-display wall-clock latency, because the AirPlay timestamps available here are stream-relative.
 
@@ -69,10 +69,8 @@ The Kotlin side does not parse protocol state in the hot path. It only receives 
 
 Receiver prefers dropping stale media over building delay:
 
-- Video uses a tiny fixed-size `LinkedBlockingDeque` that preserves codec config and frame dependency order before decode.
-- After fresh H.264 codec config, video waits for an IDR frame before queueing non-config frame data.
+- Video uses a tiny fixed-size `ArrayBlockingQueue` and feeds packetized H.264 directly to `MediaCodec`, matching the simple baseline startup path.
 - Decoded video output is drained aggressively; if several decoded frames are waiting, stale output buffers are discarded and only the newest one is rendered.
-- The same H.264 scan used for display wake decisions looks only for start codes and NAL types, avoiding deeper parsing in the hot path.
 - Traffic monitor aggregation is cheap enough to stay enabled, but the chart is only redrawn while the overlay is visible.
 - Audio uses a fixed-size `ArrayBlockingQueue` capped at 32 PCM packets, prebuffers 8 packets before playback starts, and trims backlog to 24 pending packets before enqueueing.
 - The native RAOP audio reorder buffer is capped at 64 packets, limiting how long playback can stall while waiting for a missing packet or resend.

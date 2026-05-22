@@ -48,7 +48,8 @@ class MainActivity : Activity() {
     private var videoMode = VideoMode.HD
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
     private var audioVolume = DEFAULT_AUDIO_VOLUME
-    private var lastWakeNudgeAtMs = 0L
+    @Volatile private var lastWakeNudgeAtMs = 0L
+    @Volatile private var wakeNudgePending = false
     private var volumeGestureStartY = 0f
     private var volumeGestureStartLevel = DEFAULT_AUDIO_VOLUME
     private var isVolumeGestureCandidate = false
@@ -131,13 +132,16 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && ::startupPanel.isInitialized && !isStreaming) {
+        if (hasFocus && ::startupPanel.isInitialized) {
             // Only re-assert immersive flags if they actually drifted. Writing
             // systemUiVisibility unconditionally on every focus event —
             // including the brief focus blip when a tap reveals the system
             // bars under FLAG_IMMERSIVE_STICKY — forces a layout pass that
             // shows up as a flicker on the startup panel.
             ensureImmersiveFlags()
+            if (isStarted) {
+                applyWakeMode()
+            }
             // Note: text is intentionally NOT refreshed here. Nothing observable
             // by the user changes between focus events, so rewriting it just
             // adds a needless redraw cycle.
@@ -202,7 +206,7 @@ class MainActivity : Activity() {
                 keepReceiverAwake()
             }
             WakeMode.WAKE_ON_ACTIVITY -> {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                setKeepScreenOn(false)
                 releaseWakeLock()
             }
         }
@@ -210,7 +214,7 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun keepReceiverAwake() {
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setKeepScreenOn(true)
         val wakeLock = screenWakeLock ?: run {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             powerManager.newWakeLock(
@@ -228,8 +232,20 @@ class MainActivity : Activity() {
     }
 
     private fun allowScreenSaver() {
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setKeepScreenOn(false)
         releaseWakeLock()
+    }
+
+    private fun setKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        window.decorView.keepScreenOn = enabled
+        if (::playbackSurface.isInitialized) {
+            playbackSurface.keepScreenOn = enabled
+        }
     }
 
     private fun releaseWakeLock() {
@@ -253,7 +269,9 @@ class MainActivity : Activity() {
             return
         }
         lastWakeNudgeAtMs = now
-        bringReceiverToFront()
+        if (!hasWindowFocus()) {
+            bringReceiverToFront()
+        }
 
         val wakeLock = wakeNudgeLock ?: run {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -482,13 +500,24 @@ class MainActivity : Activity() {
         audioVolumeOverlay.visibility = View.GONE
     }
 
-    private fun handleVideoActivity(isMajorUpdate: Boolean) {
-        if (wakeMode != WakeMode.WAKE_ON_ACTIVITY || !isMajorUpdate) {
+    private fun handleVideoActivity(hasVideoActivity: Boolean) {
+        if (wakeMode != WakeMode.WAKE_ON_ACTIVITY || !hasVideoActivity) {
             return
         }
+        if (SystemClock.elapsedRealtime() - lastWakeNudgeAtMs < WAKE_NUDGE_THROTTLE_MS) {
+            return
+        }
+        if (wakeNudgePending) {
+            return
+        }
+        wakeNudgePending = true
         runOnUiThread {
-            if (wakeMode == WakeMode.WAKE_ON_ACTIVITY) {
-                nudgeDisplayAwake()
+            try {
+                if (wakeMode == WakeMode.WAKE_ON_ACTIVITY) {
+                    nudgeDisplayAwake()
+                }
+            } finally {
+                wakeNudgePending = false
             }
         }
     }
@@ -690,6 +719,7 @@ class MainActivity : Activity() {
         raopServer.stopServer()
         isStarted = false
         lastWakeNudgeAtMs = 0L
+        wakeNudgePending = false
         allowScreenSaver()
         releaseWakeNudgeLock()
         releaseMulticastLock()

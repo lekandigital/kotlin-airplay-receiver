@@ -44,8 +44,8 @@ The stream resolution mode is stored in local preferences:
 The display wake policy is stored in local preferences:
 
 - `OS default` leaves Android display behavior alone.
-- `Always awake` keeps the window and display awake while Receiver is active.
-- `Wake on activity` lets the display sleep, then briefly wakes it and brings Receiver forward when significant video activity arrives.
+- `Always awake` keeps the window, decor view, playback surface, and display awake while Receiver is active.
+- `Wake on activity` lets the display sleep, then briefly wakes it from throttled video packet activity and brings Receiver forward if focus was lost.
 
 Receiver always advertises and accepts AirPlay audio so sender capability negotiation stays simple and consistent. Volume follows Android's media stream volume. When a stream is active, a right-edge vertical swipe adjusts Android media volume and displays a transient blue vertical volume bar over the video.
 
