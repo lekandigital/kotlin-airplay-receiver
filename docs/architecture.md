@@ -53,7 +53,7 @@ Audio is disabled by default because Receiver prioritizes minimum video latency.
 
 `TrafficMonitorView` is a transparent diagnostic overlay in the upper-right corner. It is revealed by dragging in from the top-right edge and dismissed by tapping it. The overlay charts recent media throughput and receiver-side packet latency with neutral outlines plus green throughput and red latency inner strokes. Bandwidth labels adapt between `b/s`, `kb/s`, and `Mb/s`. It deliberately avoids an opaque panel so mirrored slides, documents, or video remain visible underneath.
 
-`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. Receiver advertises both `_airplay._tcp` and `_raop._tcp` on the native RAOP control port, because that endpoint owns `/info`, pairing, stream setup, and mirroring. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access. Repeated refreshes with the same service name, type, port, and TXT attributes are ignored so Android's asynchronous NSD callbacks do not race a fresh registration against an immediate unregister.
+`DNSNotify` handles local network service registration through Android NSD. It derives the visible receiver name from Android settings, preferring `Settings.Global["device_name"]`, then Bluetooth name, then a manufacturer/model fallback. Receiver uses the discovery shape from the last known-good startup path: `_airplay._tcp` points at a lightweight AirPlay announcement socket, while `_raop._tcp` points at the native RAOP control port that owns `/info`, pairing, stream setup, and mirroring. While active, `MainActivity` holds Android's Wi-Fi multicast lock, refreshes DNS-SD registrations on resume, and mirrors registration/failure status onto the startup panel so discovery can be checked without log access. Repeated refreshes with the same service name, type, port, and TXT attributes are ignored so Android's asynchronous NSD callbacks do not race a fresh registration against an immediate unregister.
 
 `RaopServer` owns the bridge between Kotlin and the native RAOP stack. It exposes the callback methods invoked from JNI:
 
@@ -66,7 +66,7 @@ It also owns the `SurfaceHolder.Callback` hookup so video decoding starts only o
 
 For video packets, `RaopServer` scans Annex B start codes for IDR, SPS, and PPS NAL units and reports those as major visual activity. It also reports the first video packet after a short idle period as major activity. Those events are used only by the `Wake on activity` display policy. `VideoPlayer` preserves codec configuration and frame dependency order. If the small queue is full, it waits briefly for decoder space; if a dependent frame still cannot be queued, Receiver keeps the already queued dependency chain, drops the overflow frame, and waits for the next IDR frame instead of feeding the decoder later P-frames whose references were discarded.
 
-For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. The native RAOP layer also reports coarse setup milestones back to the startup pane, so an operator can distinguish discovery, RTSP connection, mirror setup, media bytes, decoder startup, and first rendered frame without log access. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
+For diagnostics, `RaopServer` forwards media byte counts to `TrafficMonitorView` and stamps each Kotlin packet with the local receive time. The app treats the first accepted media packet as the start of streaming, matching the last known-good receiver path; first-frame rendering is still tracked as a decoder milestone. The startup pane shows Kotlin-side receiver, discovery, media-byte, decoder-start, and first-frame milestones without adding native setup callbacks on the RTSP thread. `AudioPlayer` and `VideoPlayer` report latency when they write audio or release video output for rendering. This measures Receiver's local queue/decode handoff behavior rather than network round-trip or sender-side capture latency.
 
 When the native RAOP connection receives `TEARDOWN`, or the mirror media socket closes, it reports stream stop through JNI. `RaopServer` confirms that no fresh media arrived during a short grace window, then forwards that to `MainActivity`, which exits the app so Receiver returns to Android instead of sitting on a stale black playback surface. A temporary lack of media packets is not treated as a disconnect, because static desktops and paused content can legitimately stop sending fresh frames for a while. A closed RTSP control socket alone is also not treated as stream end because some senders close or recycle that socket during long-running mirroring; detached native media sessions remain registered with the RAOP server so shutdown can still join their mirror and timing threads before releasing callbacks.
 
@@ -101,9 +101,9 @@ The JNI bridge caches callback method IDs once at server startup and reuses thre
 
 ## Discovery Flow
 
-1. `MainActivity` starts the native `RaopServer`.
-2. The server obtains an ephemeral local TCP port.
-3. `DNSNotify` publishes `_airplay._tcp` and `_raop._tcp` on that native RAOP control port.
+1. `MainActivity` starts a lightweight `AirPlayServer` announcement socket and the native `RaopServer`.
+2. Each server obtains an ephemeral local TCP port.
+3. `DNSNotify` publishes `_airplay._tcp` on the AirPlay socket and `_raop._tcp` on the native RAOP control port.
 4. The advertised service names are based on the device name and local MAC address, so AirPlay clients see the ThinkSmart View by its configured Android name while mirroring setup reaches the native receiver.
 
 ## Video Flow

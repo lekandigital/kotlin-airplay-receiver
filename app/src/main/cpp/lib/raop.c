@@ -153,9 +153,7 @@ conn_notify_stream_status(raop_conn_t *conn, const char *status)
 	if (!conn || !status) {
 		return;
 	}
-	if (conn->raop->callbacks.stream_status) {
-		conn->raop->callbacks.stream_status(conn->raop->callbacks.cls, status);
-	}
+	logger_log(conn->raop->logger, LOGGER_DEBUG, "%s", status);
 }
 
 static void

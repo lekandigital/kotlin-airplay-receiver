@@ -37,7 +37,6 @@ struct raop_callbacks_s {
 	int   (*video_width)(void *cls);
 	int   (*video_height)(void *cls);
 	void  (*stream_stopped)(void *cls);
-	void  (*stream_status)(void *cls, const char *status);
 
 	/* Optional but recommended callback functions */
 	void  (*audio_flush)(void *cls, void *session);

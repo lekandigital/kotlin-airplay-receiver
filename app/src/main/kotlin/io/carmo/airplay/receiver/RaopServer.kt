@@ -120,11 +120,11 @@ class RaopServer(
             NativeMemory.free(nativePointer)
             return
         }
+        markMediaTraffic()
         if (firstAudioBytesAtMs == 0L) {
             firstAudioBytesAtMs = SystemClock.elapsedRealtime()
             onStreamStatusChanged("Audio bytes received")
         }
-        lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         onTrafficSample(size)
         val packet = PCMPacket(
             data = buffer,
@@ -223,11 +223,6 @@ class RaopServer(
         scheduleStreamStopCheck(STREAM_STOP_GRACE_MS)
     }
 
-    @Suppress("unused")
-    fun onNativeStreamStatus(status: String) {
-        onStreamStatusChanged(status)
-    }
-
     val port: Int
         get() = if (serverId != 0L) getPort(serverId) else 0
 
@@ -237,7 +232,10 @@ class RaopServer(
 
     private fun markMediaTraffic() {
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
-        hasConnection = true
+        if (!hasConnection) {
+            hasConnection = true
+            onConnectionStarted()
+        }
     }
 
     private val confirmStreamStopped = Runnable {
@@ -311,9 +309,6 @@ class RaopServer(
     }
 
     private fun handleVideoFrameRendered() {
-        // Hide the startup overlay only after MediaCodec has painted a real
-        // frame. First-packet hiding can turn a decoder startup problem into a
-        // blank screen, which is much harder to diagnose from the couch.
         if (hasStartedVideo) {
             return
         }
@@ -321,7 +316,6 @@ class RaopServer(
         mainHandler.removeCallbacks(startupWatchdog)
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         onStreamStatusChanged("First frame rendered")
-        onConnectionStarted()
     }
 
     private fun reportStreamStatus(status: String, now: Long = SystemClock.elapsedRealtime()) {
