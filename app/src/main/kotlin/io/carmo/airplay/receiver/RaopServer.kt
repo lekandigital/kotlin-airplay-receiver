@@ -210,7 +210,6 @@ class RaopServer(
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
         if (!hasConnection) {
             hasConnection = true
-            onConnectionStarted()
         }
     }
 
@@ -291,6 +290,7 @@ class RaopServer(
         hasStartedVideo = true
         mainHandler.removeCallbacks(startupWatchdog)
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        onConnectionStarted()
         onStreamStatusChanged("First frame rendered")
     }
 
