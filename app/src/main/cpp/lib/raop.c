@@ -63,6 +63,8 @@ struct raop_conn_s {
 	int remotelen;
 
 	int setup;
+	int audio_started;
+	int mirror_started;
 	int stream_stopped_notified;
 };
 typedef struct raop_conn_s raop_conn_t;
@@ -166,6 +168,48 @@ conn_notify_stream_stopped(raop_conn_t *conn)
 	if (conn->raop->callbacks.stream_stopped) {
 		conn->raop->callbacks.stream_stopped(conn->raop->callbacks.cls);
 	}
+}
+
+static int
+request_get_stream_types(http_request_t *request, int *has_audio, int *has_mirror)
+{
+	const char *data;
+	int datalen;
+	plist_t root_node = NULL;
+	plist_t streams_note;
+	uint32_t stream_count;
+	int has_stream_type = 0;
+
+	*has_audio = 0;
+	*has_mirror = 0;
+	data = http_request_get_data(request, &datalen);
+	if (!data || datalen <= 0) {
+		return 0;
+	}
+	plist_from_bin(data, datalen, &root_node);
+	if (!root_node) {
+		return 0;
+	}
+	streams_note = plist_dict_get_item(root_node, "streams");
+	stream_count = streams_note ? plist_array_get_size(streams_note) : 0;
+	for (uint32_t i = 0; i < stream_count; i++) {
+		uint64_t stream_type = 0;
+		plist_t stream_note = plist_array_get_item(streams_note, i);
+		plist_t type_note = stream_note ? plist_dict_get_item(stream_note, "type") : NULL;
+		if (!type_note) {
+			continue;
+		}
+		plist_get_uint_val(type_note, &stream_type);
+		if (stream_type == 96) {
+			*has_audio = 1;
+			has_stream_type = 1;
+		} else if (stream_type == 110) {
+			*has_mirror = 1;
+			has_stream_type = 1;
+		}
+	}
+	plist_free(root_node);
+	return has_stream_type;
 }
 
 static void
@@ -316,21 +360,38 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response)
 	} else if (!strcmp(method, "TEARDOWN")) {
 		conn_notify_stream_status(conn, "Stream teardown received");
 		http_response_add_header(*response, "Connection", "close");
-		int had_stream = conn->raop_rtp || conn->raop_rtp_mirror;
-		if (conn->raop_rtp) {
+		int teardown_audio = 0;
+		int teardown_mirror = 0;
+		int has_teardown_stream_type = request_get_stream_types(request, &teardown_audio, &teardown_mirror);
+		if (!has_teardown_stream_type) {
+			teardown_audio = 1;
+			teardown_mirror = 1;
+		}
+		int had_audio_stream = teardown_audio && conn->audio_started && conn->raop_rtp;
+		int had_mirror_stream = teardown_mirror && conn->mirror_started && conn->raop_rtp_mirror;
+		if (teardown_audio && conn->raop_rtp) {
 			raop_remove_active_rtp(conn->raop, conn->raop_rtp);
 			/* Destroy our RTP session */
 			raop_rtp_destroy(conn->raop_rtp);
 			conn->raop_rtp = NULL;
+			conn->audio_started = 0;
 		}
-		if (conn->raop_rtp_mirror) {
+		if (teardown_audio && conn->raop_rtp_mirror && !conn->mirror_started) {
+			raop_remove_active_mirror(conn->raop, conn->raop_rtp_mirror);
+			raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
+			conn->raop_rtp_mirror = NULL;
+		}
+		if (teardown_mirror && conn->raop_rtp_mirror) {
 			raop_remove_active_mirror(conn->raop, conn->raop_rtp_mirror);
 			/* Destroy our mirror session */
 			raop_rtp_mirror_destroy(conn->raop_rtp_mirror);
 			conn->raop_rtp_mirror = NULL;
+			conn->mirror_started = 0;
 		}
-		if (had_stream) {
+		if (had_mirror_stream) {
 			conn_notify_stream_stopped(conn);
+		} else if (had_audio_stream) {
+			conn_notify_stream_status(conn, "Audio stream teardown handled");
 		}
 	}
 	if (handler != NULL) {

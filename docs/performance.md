@@ -38,9 +38,9 @@ The traffic monitor is intentionally modest:
 
 The startup pane remains visible while the receiver moves through setup, mirror negotiation, first media bytes, decoder startup, and first rendered frame. It disappears when the first decoded video frame is rendered, keeping the screen from going black while still exposing enough state to debug failed handshakes without log access.
 
-Audio is disabled by default and can be enabled before a sender connects. In the default mode Receiver strips audio format details from `/info` and rejects the native audio `SETUP` request. The Kotlin-side audio drop path remains as a safety fallback if a client retries or races with a setting change.
+Audio is always advertised and accepted so sender negotiation stays simple. Receiver controls playback volume through Android's media stream volume.
 
-Receiver exits on explicit stream teardown, or when the mirror media socket closes and no fresh media arrives during a short grace window. It does not exit merely because media goes temporarily quiet, since static desktops and paused content can legitimately stop sending fresh frames for a while. Receiver also does not exit merely because the RTSP control socket closes, since some senders recycle that socket while a long-running mirror stream is still active.
+Receiver exits on explicit video/mirror stream teardown, or when the mirror media socket closes and no fresh media arrives during a short grace window. Audio-only teardown destroys the audio RTP session but leaves the app running so it can accept another stream. Receiver does not exit merely because media goes temporarily quiet, since static desktops and paused content can legitimately stop sending fresh frames for a while. Receiver also does not exit merely because the RTSP control socket closes, since some senders recycle that socket while a long-running mirror stream is still active.
 
 Native mirror sessions are kept in a small active-session registry after RTSP control reconnects. This lets Receiver keep a constant stream alive while still joining mirror and timing threads during teardown, and caps malformed mirror payload sizes before they can grow native buffers unexpectedly.
 

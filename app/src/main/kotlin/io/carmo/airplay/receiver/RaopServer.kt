@@ -193,6 +193,14 @@ class RaopServer(
 
     @Suppress("unused")
     fun onStreamStopped() {
+        if (firstVideoBytesAtMs == 0L && !hasStartedVideo) {
+            mainHandler.removeCallbacks(confirmStreamStopped)
+            hasConnection = false
+            firstAudioBytesAtMs = 0L
+            lastMediaPacketAtMs = 0L
+            onStreamStatusChanged("Audio stream stopped")
+            return
+        }
         onStreamStatusChanged("Stream stopped")
         scheduleStreamStopCheck(STREAM_STOP_GRACE_MS)
     }

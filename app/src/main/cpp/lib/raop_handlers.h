@@ -401,6 +401,8 @@ raop_handler_setup(raop_conn_t *conn,
 	        if (conn->raop_rtp_mirror) {
 				raop_rtp_init_mirror_aes(conn->raop_rtp_mirror, streamConnectionID);
 				raop_rtp_start_mirror(conn->raop_rtp_mirror, use_udp, remote_tport, &tport, &dport);
+				conn->mirror_started = 1;
+				conn->stream_stopped_notified = 0;
 				conn_notify_stream_status(conn, "Mirror setup ready");
 	            logger_log(conn->raop->logger, LOGGER_DEBUG, "RAOP initialized success");
 	        } else {
@@ -443,6 +445,7 @@ raop_handler_setup(raop_conn_t *conn,
 
         if (conn->raop_rtp) {
             raop_rtp_start_audio(conn->raop_rtp, use_udp, remote_cport, remote_tport, &cport, &tport, &dport);
+            conn->audio_started = 1;
             conn_notify_stream_status(conn, "Audio setup ready");
             logger_log(conn->raop->logger, LOGGER_DEBUG, "RAOP initialized success");
         } else {
