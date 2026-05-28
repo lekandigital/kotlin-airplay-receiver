@@ -29,6 +29,10 @@ class VideoPlayer(
     // Diagnostic flags — log critical lifecycle events exactly once per player.
     private var hasLoggedFirstRender = false
     private var hasLoggedDecoderMissing = false
+    private var droppedFrames = 0L
+    private var renderedFrames = 0L
+    private var lastDropLogAtMs = 0L
+    private var lastRenderLogAtMs = 0L
 
     /** True once the decoder has produced and rendered at least one frame. */
     fun hasRenderedFirstFrame(): Boolean = hasRenderedFirstFrame
@@ -156,11 +160,23 @@ class VideoPlayer(
         if (!hasRenderedFirstFrame) {
             hasRenderedFirstFrame = true
         }
+        renderedFrames += 1
         if (!hasLoggedFirstRender) {
             Log.i(TAG, "first frame rendered to surface")
             hasLoggedFirstRender = true
+            lastRenderLogAtMs = SystemClock.elapsedRealtime()
+        } else {
+            logRenderProgress()
         }
         onFrameRendered()
+    }
+
+    private fun logRenderProgress() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRenderLogAtMs >= RENDER_LOG_INTERVAL_MS) {
+            lastRenderLogAtMs = now
+            Log.i(TAG, "video rendering: frames=$renderedFrames queued=${packets.size}")
+        }
     }
 
     private fun drainOutput(codec: MediaCodec, timeoutUsec: Long): Boolean {
@@ -195,17 +211,30 @@ class VideoPlayer(
 
     private fun trimBacklog() {
         while (packets.size >= MAX_QUEUED_FRAMES) {
-            val packet = packets.peek() ?: return
-            if (packet.isCodecConfig) {
-                if (DEBUG_FRAMES) {
-                    Log.d(TAG, "preserving codec config; dropping incoming video frame")
+            val iterator = packets.iterator()
+            while (iterator.hasNext()) {
+                val packet = iterator.next()
+                if (packet.isCodecConfig) {
+                    continue
                 }
-                return
+                iterator.remove()
+                packet.release()
+                logDroppedFrame()
+                break
             }
-            packets.poll()?.release() ?: return
-            if (DEBUG_FRAMES) {
-                Log.d(TAG, "video queue full; dropped oldest frame")
+            if (packets.size >= MAX_QUEUED_FRAMES && packets.all { it.isCodecConfig }) {
+                packets.poll()?.release() ?: return
+                logDroppedFrame()
             }
+        }
+    }
+
+    private fun logDroppedFrame() {
+        droppedFrames += 1
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastDropLogAtMs >= DROP_LOG_INTERVAL_MS) {
+            lastDropLogAtMs = now
+            Log.w(TAG, "video queue pressure: dropped=$droppedFrames queued=${packets.size}")
         }
     }
 
@@ -231,8 +260,10 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 4
-        private const val MAX_QUEUED_FRAMES = 3
+        private const val MAX_BUFFERED_FRAMES = 96
+        private const val MAX_QUEUED_FRAMES = 72
+        private const val DROP_LOG_INTERVAL_MS = 2_000L
+        private const val RENDER_LOG_INTERVAL_MS = 5_000L
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val TIMEOUT_USEC = 1000L

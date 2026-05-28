@@ -63,11 +63,7 @@ class MainActivity : Activity() {
                 receiverDeviceName = state.deviceName
                 discoveryStatus = state.discoveryStatus
                 streamStatus = state.streamStatus
-                if (state.isStreaming) {
-                    hideStatus()
-                } else if (::startupPanel.isInitialized && !isStreaming) {
-                    updateWaitingStatus()
-                }
+                syncPlaybackChrome(state)
             }
         }
 
@@ -131,7 +127,7 @@ class MainActivity : Activity() {
         startReceiverForegroundService()
         runtime.start()
         runtime.attachSurface(playbackSurface, videoMode.width, videoMode.height, audioVolume)
-        showWaitingStatus()
+        syncPlaybackChrome(runtime.snapshot())
 
         if (DEBUG_CODECS) {
             logSupportedCodecs()
@@ -372,6 +368,19 @@ class MainActivity : Activity() {
         }
         showControl(startupVersionLabel)
         showControl(startupPanel)
+    }
+
+    private fun syncPlaybackChrome(state: ReceiverRuntime.State) {
+        if (!::startupPanel.isInitialized) {
+            return
+        }
+        if (state.isStreaming) {
+            hideStatus()
+            return
+        }
+        if (!isStreaming) {
+            updateWaitingStatus()
+        }
     }
 
     private fun updateWaitingStatus() {

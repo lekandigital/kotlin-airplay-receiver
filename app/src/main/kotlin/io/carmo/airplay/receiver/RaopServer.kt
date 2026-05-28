@@ -11,6 +11,7 @@ import io.carmo.airplay.receiver.model.PCMPacket
 import io.carmo.airplay.receiver.player.AudioPlayer
 import io.carmo.airplay.receiver.player.VideoPlayer
 import java.nio.ByteBuffer
+import java.util.ArrayDeque
 
 class RaopServer(
     initialSurfaceView: SurfaceView?,
@@ -27,10 +28,14 @@ class RaopServer(
 
     @Volatile private var videoPlayer: VideoPlayer? = null
     @Volatile private var surfaceView: SurfaceView? = initialSurfaceView
+    private val pendingVideoPackets = ArrayDeque<NALPacket>()
     private var audioPlayer: AudioPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var serverId: Long = 0
+    private var pendingVideoBytes = 0
     @Volatile private var lastMediaPacketAtMs = 0L
+    @Volatile private var lastVideoPacketAtMs = 0L
+    @Volatile private var lastRenderedVideoFrameAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
     @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
@@ -65,9 +70,11 @@ class RaopServer(
         }
         markMediaTraffic()
         val now = SystemClock.elapsedRealtime()
+        lastVideoPacketAtMs = now
         if (firstVideoBytesAtMs == 0L) {
             firstVideoBytesAtMs = now
             scheduleStartupWatchdog()
+            scheduleVideoStallWatchdog()
             reportStreamStatus("Video bytes received", now)
             Log.i(TAG, "first video bytes received (size=$size, nalType=$nalType)")
         } else if (!hasStartedVideo && now - lastVideoStatusAtMs >= VIDEO_STATUS_INTERVAL_MS) {
@@ -100,8 +107,8 @@ class RaopServer(
         )
         val player = videoPlayer ?: ensureVideoPlayer()
         if (player == null) {
+            queuePendingVideoPacket(packet)
             logMissingSurface(nalType, size)
-            packet.release()
             return
         }
         player.addPacket(packet)
@@ -188,6 +195,7 @@ class RaopServer(
     fun stopServer() {
         mainHandler.removeCallbacks(confirmStreamStopped)
         mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.removeCallbacks(videoStallWatchdog)
         if (serverId != 0L) {
             stop(serverId)
         }
@@ -196,12 +204,15 @@ class RaopServer(
         audioPlayer?.stopPlay()
         audioPlayer = null
         lastMediaPacketAtMs = 0L
+        lastVideoPacketAtMs = 0L
+        lastRenderedVideoFrameAtMs = 0L
         hasConnection = false
         hasStartedVideo = false
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
         lastVideoStatusAtMs = 0L
         lastNoSurfaceVideoLogAtMs = 0L
+        clearPendingVideoPackets()
         cachedCodecConfig = null
         onStreamStatusChanged("Stream idle")
     }
@@ -294,16 +305,20 @@ class RaopServer(
     private fun resetPlaybackState(status: String, restartAudio: Boolean) {
         mainHandler.removeCallbacks(confirmStreamStopped)
         mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.removeCallbacks(videoStallWatchdog)
         stopVideoPlayer()
         audioPlayer?.stopPlay()
         audioPlayer = null
         lastMediaPacketAtMs = 0L
+        lastVideoPacketAtMs = 0L
+        lastRenderedVideoFrameAtMs = 0L
         hasConnection = false
         hasStartedVideo = false
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
         lastVideoStatusAtMs = 0L
         lastNoSurfaceVideoLogAtMs = 0L
+        clearPendingVideoPackets()
         cachedCodecConfig = null
         if (restartAudio) {
             ensureAudioPlayer()
@@ -317,7 +332,49 @@ class RaopServer(
             return
         }
         lastNoSurfaceVideoLogAtMs = now
-        Log.w(TAG, "no video surface attached; dropping video packet (nalType=$nalType, size=$size)")
+        Log.w(
+            TAG,
+            "no video surface attached; buffering video packet " +
+                "(nalType=$nalType, size=$size, queued=${pendingVideoPackets.size}, bytes=$pendingVideoBytes)"
+        )
+    }
+
+    @Synchronized
+    private fun queuePendingVideoPacket(packet: NALPacket) {
+        pendingVideoPackets.addLast(packet)
+        pendingVideoBytes += packet.size
+        while (
+            pendingVideoPackets.size > MAX_PENDING_VIDEO_PACKETS ||
+            pendingVideoBytes > MAX_PENDING_VIDEO_BYTES
+        ) {
+            val dropped = pendingVideoPackets.removeFirst()
+            pendingVideoBytes -= dropped.size
+            dropped.release()
+        }
+    }
+
+    @Synchronized
+    private fun replayPendingVideoPackets(player: VideoPlayer) {
+        if (pendingVideoPackets.isEmpty()) {
+            return
+        }
+        val packetCount = pendingVideoPackets.size
+        val byteCount = pendingVideoBytes
+        Log.i(TAG, "replaying pending video packets (count=$packetCount, bytes=$byteCount)")
+        while (pendingVideoPackets.isNotEmpty()) {
+            val packet = pendingVideoPackets.removeFirst()
+            pendingVideoBytes -= packet.size
+            player.addPacket(packet)
+        }
+        pendingVideoBytes = 0
+    }
+
+    @Synchronized
+    private fun clearPendingVideoPackets() {
+        while (pendingVideoPackets.isNotEmpty()) {
+            pendingVideoPackets.removeFirst().release()
+        }
+        pendingVideoBytes = 0
     }
 
     @Synchronized
@@ -340,6 +397,7 @@ class RaopServer(
         videoPlayer = newPlayer
         onStreamStatusChanged("Decoder starting")
         newPlayer.start()
+        scheduleVideoStallWatchdog()
         // Replay cached SPS/PPS so the freshly-created decoder has codec
         // config without waiting for the source to send it again. Without
         // this, swapping video modes mid-session (or any time the surface
@@ -351,6 +409,7 @@ class RaopServer(
                 NALPacket.forCodecConfig(configBytes, SystemClock.elapsedRealtime())
             )
         }
+        replayPendingVideoPackets(newPlayer)
         return newPlayer
     }
 
@@ -368,12 +427,14 @@ class RaopServer(
     }
 
     private fun handleVideoFrameRendered() {
+        val now = SystemClock.elapsedRealtime()
+        lastRenderedVideoFrameAtMs = now
         if (hasStartedVideo) {
             return
         }
         hasStartedVideo = true
         mainHandler.removeCallbacks(startupWatchdog)
-        lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        lastMediaPacketAtMs = now
         onConnectionStarted()
         onStreamStatusChanged("First frame rendered")
     }
@@ -407,6 +468,36 @@ class RaopServer(
         mainHandler.postDelayed(startupWatchdog, STARTUP_WATCHDOG_MS)
     }
 
+    private val videoStallWatchdog = Runnable {
+        if (firstVideoBytesAtMs == 0L || videoPlayer == null) {
+            return@Runnable
+        }
+        val now = SystemClock.elapsedRealtime()
+        val videoTrafficAgeMs = now - lastVideoPacketAtMs
+        val renderAgeMs = now - lastRenderedVideoFrameAtMs
+        if (
+            hasStartedVideo &&
+            lastRenderedVideoFrameAtMs != 0L &&
+            videoTrafficAgeMs <= VIDEO_STALL_TRAFFIC_MAX_AGE_MS &&
+            renderAgeMs >= VIDEO_STALL_RESTART_MS
+        ) {
+            Log.w(
+                TAG,
+                "video stall: packets still arriving but no rendered frames for ${renderAgeMs}ms; restarting decoder"
+            )
+            stopVideoPlayer()
+            hasStartedVideo = false
+            lastRenderedVideoFrameAtMs = 0L
+            ensureVideoPlayer()
+        }
+        scheduleVideoStallWatchdog()
+    }
+
+    private fun scheduleVideoStallWatchdog() {
+        mainHandler.removeCallbacks(videoStallWatchdog)
+        mainHandler.postDelayed(videoStallWatchdog, VIDEO_STALL_CHECK_MS)
+    }
+
     private fun markVideoActivity() {
         onVideoActivity(true)
     }
@@ -434,6 +525,8 @@ class RaopServer(
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val VIDEO_STATUS_INTERVAL_MS = 1_000L
         private const val NO_SURFACE_LOG_INTERVAL_MS = 2_000L
+        private const val MAX_PENDING_VIDEO_PACKETS = 240
+        private const val MAX_PENDING_VIDEO_BYTES = 8 * 1024 * 1024
         // If video bytes have been arriving for this long with no rendered
         // frame, give up waiting for onFrameRendered and unblock the UI. The
         // surface will simply show whatever the decoder eventually paints.
@@ -441,6 +534,9 @@ class RaopServer(
         // The watchdog only fires if traffic is recent; avoids spuriously
         // hiding the panel after a long idle gap.
         private const val STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS = 2_000L
+        private const val VIDEO_STALL_CHECK_MS = 3_000L
+        private const val VIDEO_STALL_RESTART_MS = 5_000L
+        private const val VIDEO_STALL_TRAFFIC_MAX_AGE_MS = 1_500L
         private const val NAL_TYPE_CODEC_CONFIG = 0
 
         init {
