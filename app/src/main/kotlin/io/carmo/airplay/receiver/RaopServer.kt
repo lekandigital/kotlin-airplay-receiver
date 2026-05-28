@@ -13,7 +13,7 @@ import io.carmo.airplay.receiver.player.VideoPlayer
 import java.nio.ByteBuffer
 
 class RaopServer(
-    private val surfaceView: SurfaceView,
+    initialSurfaceView: SurfaceView?,
     private val onConnectionStarted: () -> Unit,
     private val onVideoActivity: (Boolean) -> Unit,
     private val onTrafficSample: (Int) -> Unit,
@@ -26,6 +26,7 @@ class RaopServer(
 ) : SurfaceHolder.Callback {
 
     @Volatile private var videoPlayer: VideoPlayer? = null
+    @Volatile private var surfaceView: SurfaceView? = initialSurfaceView
     private var audioPlayer: AudioPlayer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var serverId: Long = 0
@@ -50,9 +51,10 @@ class RaopServer(
     /** Wall-clock time (elapsedRealtime) when the first accepted audio byte arrived. */
     @Volatile private var firstAudioBytesAtMs = 0L
     @Volatile private var lastVideoStatusAtMs = 0L
+    @Volatile private var lastNoSurfaceVideoLogAtMs = 0L
 
     init {
-        surfaceView.holder.addCallback(this)
+        initialSurfaceView?.holder?.addCallback(this)
         ensureAudioPlayer()
     }
 
@@ -98,7 +100,7 @@ class RaopServer(
         )
         val player = videoPlayer ?: ensureVideoPlayer()
         if (player == null) {
-            Log.w(TAG, "no video player available (surface invalid?); dropping packet (nalType=$nalType, size=$size)")
+            logMissingSurface(nalType, size)
             packet.release()
             return
         }
@@ -114,6 +116,7 @@ class RaopServer(
         if (firstAudioBytesAtMs == 0L) {
             firstAudioBytesAtMs = SystemClock.elapsedRealtime()
             onStreamStatusChanged("Audio bytes received")
+            Log.i(TAG, "first audio bytes received (size=$size, pts=$pts)")
         }
         onTrafficSample(size)
         val packet = PCMPacket(
@@ -131,13 +134,44 @@ class RaopServer(
         player.addPacket(packet)
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) = Unit
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        if (firstVideoBytesAtMs != 0L) {
+            ensureVideoPlayer()
+        }
+    }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        if (firstVideoBytesAtMs != 0L) {
+            ensureVideoPlayer()
+        }
+    }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         videoPlayer?.stopDecode()
         videoPlayer = null
+        hasStartedVideo = false
+    }
+
+    fun attachSurface(surfaceView: SurfaceView) {
+        val currentSurface = this.surfaceView
+        if (currentSurface === surfaceView) {
+            return
+        }
+        currentSurface?.holder?.removeCallback(this)
+        this.surfaceView = surfaceView
+        surfaceView.holder.addCallback(this)
+        if (firstVideoBytesAtMs != 0L && surfaceView.holder.surface.isValid) {
+            ensureVideoPlayer()
+        }
+    }
+
+    fun detachSurface(surfaceView: SurfaceView) {
+        if (this.surfaceView !== surfaceView) {
+            return
+        }
+        surfaceView.holder.removeCallback(this)
+        this.surfaceView = null
+        stopVideoPlayer()
         hasStartedVideo = false
     }
 
@@ -167,6 +201,7 @@ class RaopServer(
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
         lastVideoStatusAtMs = 0L
+        lastNoSurfaceVideoLogAtMs = 0L
         cachedCodecConfig = null
         onStreamStatusChanged("Stream idle")
     }
@@ -186,6 +221,21 @@ class RaopServer(
     }
 
     @Suppress("unused")
+    fun onSetAudioVolume(volumeDb: Float) {
+        audioVolume = raopVolumeToLinear(volumeDb)
+        audioPlayer?.setVolume(audioVolume)
+        Log.i(TAG, "RAOP volume changed: db=$volumeDb, linear=$audioVolume")
+    }
+
+    @Suppress("unused")
+    fun onAudioFlush() {
+        Log.i(TAG, "RAOP audio flush requested")
+        audioPlayer?.stopPlay()
+        audioPlayer = null
+        ensureAudioPlayer()
+    }
+
+    @Suppress("unused")
     fun getVideoWidth(): Int = videoWidth
 
     @Suppress("unused")
@@ -195,10 +245,7 @@ class RaopServer(
     fun onStreamStopped() {
         if (firstVideoBytesAtMs == 0L && !hasStartedVideo) {
             mainHandler.removeCallbacks(confirmStreamStopped)
-            hasConnection = false
-            firstAudioBytesAtMs = 0L
-            lastMediaPacketAtMs = 0L
-            onStreamStatusChanged("Audio stream stopped")
+            resetPlaybackState("Audio stream stopped", restartAudio = true)
             return
         }
         onStreamStatusChanged("Stream stopped")
@@ -225,6 +272,7 @@ class RaopServer(
         }
         val lastPacketAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
         if (lastPacketAgeMs >= streamStopThresholdMs) {
+            resetPlaybackState("Stream idle", restartAudio = true)
             onStreamStoppedCallback.invoke()
         }
     }
@@ -243,13 +291,43 @@ class RaopServer(
         }
     }
 
+    private fun resetPlaybackState(status: String, restartAudio: Boolean) {
+        mainHandler.removeCallbacks(confirmStreamStopped)
+        mainHandler.removeCallbacks(startupWatchdog)
+        stopVideoPlayer()
+        audioPlayer?.stopPlay()
+        audioPlayer = null
+        lastMediaPacketAtMs = 0L
+        hasConnection = false
+        hasStartedVideo = false
+        firstVideoBytesAtMs = 0L
+        firstAudioBytesAtMs = 0L
+        lastVideoStatusAtMs = 0L
+        lastNoSurfaceVideoLogAtMs = 0L
+        cachedCodecConfig = null
+        if (restartAudio) {
+            ensureAudioPlayer()
+        }
+        onStreamStatusChanged(status)
+    }
+
+    private fun logMissingSurface(nalType: Int, size: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastNoSurfaceVideoLogAtMs < NO_SURFACE_LOG_INTERVAL_MS) {
+            return
+        }
+        lastNoSurfaceVideoLogAtMs = now
+        Log.w(TAG, "no video surface attached; dropping video packet (nalType=$nalType, size=$size)")
+    }
+
     @Synchronized
     private fun ensureVideoPlayer(): VideoPlayer? {
         val currentPlayer = videoPlayer
         if (currentPlayer != null) {
             return currentPlayer
         }
-        if (!surfaceView.holder.surface.isValid) {
+        val surfaceView = surfaceView
+        if (surfaceView == null || !surfaceView.holder.surface.isValid) {
             return null
         }
         val newPlayer = VideoPlayer(
@@ -333,14 +411,29 @@ class RaopServer(
         onVideoActivity(true)
     }
 
+    private fun raopVolumeToLinear(volumeDb: Float): Float {
+        if (volumeDb <= MIN_RAOP_VOLUME_DB) {
+            return MIN_AUDIO_VOLUME
+        }
+        if (volumeDb >= MAX_RAOP_VOLUME_DB) {
+            return MAX_AUDIO_VOLUME
+        }
+        return Math.pow(10.0, volumeDb.toDouble() / 20.0)
+            .toFloat()
+            .coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+    }
+
     companion object {
         private const val TAG = "Receiver-RAOP"
         private const val DEBUG_FRAMES = false
         private const val MIN_AUDIO_VOLUME = 0.0f
         private const val MAX_AUDIO_VOLUME = 1.0f
+        private const val MIN_RAOP_VOLUME_DB = -144.0f
+        private const val MAX_RAOP_VOLUME_DB = 0.0f
         private const val VIDEO_RESTART_TIMEOUT_MS = 500L
         private const val STREAM_STOP_GRACE_MS = 5_000L
         private const val VIDEO_STATUS_INTERVAL_MS = 1_000L
+        private const val NO_SURFACE_LOG_INTERVAL_MS = 2_000L
         // If video bytes have been arriving for this long with no rendered
         // frame, give up waiting for onFrameRendered and unblock the UI. The
         // surface will simply show whatever the decoder eventually paints.

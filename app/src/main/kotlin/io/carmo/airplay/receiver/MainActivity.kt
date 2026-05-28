@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.media.AudioManager
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
@@ -20,14 +19,11 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.RadioGroup
 import android.widget.TextView
-import android.widget.Toast
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
 
-    private lateinit var airPlayServer: AirPlayServer
-    private lateinit var raopServer: RaopServer
-    private lateinit var dnsNotify: DNSNotify
+    private lateinit var runtime: ReceiverRuntime
     private lateinit var playbackSurface: SurfaceView
     private lateinit var startupPanel: View
     private lateinit var startupVersionLabel: TextView
@@ -44,7 +40,6 @@ class MainActivity : Activity() {
     private lateinit var audioManager: AudioManager
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
-    private var multicastLock: WifiManager.MulticastLock? = null
     private var videoMode = VideoMode.HD
     private var wakeMode = WakeMode.WAKE_ON_ACTIVITY
     private var audioVolume = DEFAULT_AUDIO_VOLUME
@@ -57,13 +52,53 @@ class MainActivity : Activity() {
     private var trafficGestureStartX = 0f
     private var trafficGestureStartY = 0f
     private var isTrafficGestureCandidate = false
-    private var isStarted = false
     private var isStreaming = false
+    private var receiverDeviceName = "Receiver"
     private var discoveryStatus = "Discovery starting"
     private var streamStatus = "Stream idle"
 
+    private val runtimeListener = object : ReceiverRuntime.Listener {
+        override fun onRuntimeStateChanged(state: ReceiverRuntime.State) {
+            runOnUiThread {
+                receiverDeviceName = state.deviceName
+                discoveryStatus = state.discoveryStatus
+                streamStatus = state.streamStatus
+                if (state.isStreaming) {
+                    hideStatus()
+                } else if (::startupPanel.isInitialized && !isStreaming) {
+                    updateWaitingStatus()
+                }
+            }
+        }
+
+        override fun onRuntimeConnectionStarted() {
+            hideStatus()
+        }
+
+        override fun onRuntimeVideoActivity(hasVideoActivity: Boolean) {
+            handleVideoActivity(hasVideoActivity)
+        }
+
+        override fun onRuntimeTrafficSample(byteCount: Int) {
+            runOnUiThread {
+                handleTrafficSample(byteCount)
+            }
+        }
+
+        override fun onRuntimeLatencySample(latencyMs: Long) {
+            runOnUiThread {
+                handleLatencySample(latencyMs)
+            }
+        }
+
+        override fun onRuntimeStreamStopped() {
+            handleStreamStopped()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runtime = ReceiverRuntime.get(applicationContext)
         setContentView(R.layout.activity_main)
         configurePlaybackWindow()
 
@@ -87,32 +122,20 @@ class MainActivity : Activity() {
 
         videoMode = loadVideoMode()
         audioVolume = loadAudioVolume()
-        airPlayServer = AirPlayServer()
-        raopServer = RaopServer(
-            playbackSurface,
-            ::hideStatus,
-            ::handleVideoActivity,
-            ::handleTrafficSample,
-            ::handleLatencySample,
-            ::handleStreamStopped,
-            ::handleStreamStatus,
-            videoMode.width,
-            videoMode.height,
-            audioVolume
-        )
-        dnsNotify = DNSNotify(this, ::handleDiscoveryStatus)
         wakeMode = loadWakeMode()
         keepSurfaceProportional(playbackSurface)
         configureVideoModeControl()
         configureWakeModeControl()
         configureAudioControls()
+        runtime.addListener(runtimeListener)
+        startReceiverForegroundService()
+        runtime.start()
+        runtime.attachSurface(playbackSurface, videoMode.width, videoMode.height, audioVolume)
         showWaitingStatus()
 
         if (DEBUG_CODECS) {
             logSupportedCodecs()
         }
-
-        startServer()
     }
 
     override fun onResume() {
@@ -121,9 +144,9 @@ class MainActivity : Activity() {
             audioVolume = loadAudioVolume()
             updateAudioVolumeUi()
         }
-        if (isStarted) {
+        if (runtime.snapshot().isStarted) {
             applyWakeMode()
-            refreshAnnouncements()
+            runtime.refreshAnnouncements()
         }
         if (::startupPanel.isInitialized && !isStreaming) {
             updateWaitingStatus()
@@ -139,7 +162,7 @@ class MainActivity : Activity() {
             // bars under FLAG_IMMERSIVE_STICKY — forces a layout pass that
             // shows up as a flicker on the startup panel.
             ensureImmersiveFlags()
-            if (isStarted) {
+            if (runtime.snapshot().isStarted) {
                 applyWakeMode()
             }
             // Note: text is intentionally NOT refreshed here. Nothing observable
@@ -149,7 +172,12 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        stopServer()
+        if (::runtime.isInitialized && ::playbackSurface.isInitialized) {
+            runtime.detachSurface(playbackSurface)
+            runtime.removeListener(runtimeListener)
+        }
+        allowScreenSaver()
+        releaseWakeNudgeLock()
         super.onDestroy()
     }
 
@@ -348,7 +376,7 @@ class MainActivity : Activity() {
 
     private fun updateWaitingStatus() {
         startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
-        statusView.text = "${dnsNotify.deviceName}\nWaiting in ${videoMode.label} mode\n$streamStatus"
+        statusView.text = "$receiverDeviceName\nWaiting in ${videoMode.label} mode\n$streamStatus"
         discoveryStatusView.text = discoveryStatus
     }
 
@@ -388,7 +416,7 @@ class MainActivity : Activity() {
             }
             videoMode = selectedMode
             saveVideoMode(selectedMode)
-            raopServer.setVideoMode(selectedMode.width, selectedMode.height)
+            runtime.setVideoMode(selectedMode.width, selectedMode.height)
             updateSurfaceLayout(playbackSurface)
             if (!isStreaming) {
                 updateWaitingStatus()
@@ -458,6 +486,7 @@ class MainActivity : Activity() {
         if (persist) {
             saveAudioVolume(audioVolume)
         }
+        runtime.setAudioVolume(audioVolume)
         updateAudioVolumeUi()
         if (isStreaming) {
             showAudioVolumeOverlay()
@@ -532,9 +561,14 @@ class MainActivity : Activity() {
 
     private fun handleStreamStopped() {
         runOnUiThread {
-            if (!isFinishing) {
-                finishAndRemoveTask()
+            if (isFinishing) {
+                return@runOnUiThread
             }
+            isStreaming = false
+            streamStatus = "Stream idle"
+            showWaitingStatus()
+            runtime.refreshAnnouncements()
+            applyWakeMode()
         }
     }
 
@@ -629,68 +663,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startServer() {
-        if (isStarted) {
-            return
-        }
-
-        startReceiverForegroundService()
-        acquireMulticastLock()
-        airPlayServer.startServer()
-        val airplayPort = airPlayServer.port
-        if (airplayPort == 0) {
-            Toast.makeText(applicationContext, "Start the AirPlay service failed", Toast.LENGTH_SHORT).show()
-            handleDiscoveryStatus("AirPlay failed: port unavailable")
-        } else {
-            dnsNotify.registerAirplay(airplayPort)
-        }
-
-        raopServer.startServer()
-        val raopPort = raopServer.port
-        if (raopPort == 0) {
-            Toast.makeText(applicationContext, "Start the RAOP service failed", Toast.LENGTH_SHORT).show()
-            handleDiscoveryStatus("RAOP failed: port unavailable")
-        } else {
-            dnsNotify.registerRaop(raopPort)
-        }
-
-        isStarted = true
-        applyWakeMode()
-        Log.d(TAG, "deviceName = ${dnsNotify.deviceName}, airplayPort = $airplayPort, raopPort = $raopPort")
-    }
-
-    private fun refreshAnnouncements() {
-        acquireMulticastLock()
-        val airplayPort = airPlayServer.port
-        if (airplayPort != 0) {
-            dnsNotify.registerAirplay(airplayPort)
-        }
-        val raopPort = raopServer.port
-        if (raopPort != 0) {
-            dnsNotify.registerRaop(raopPort)
-        }
-    }
-
-    private fun acquireMulticastLock() {
-        val lock = multicastLock ?: run {
-            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            wifiManager.createMulticastLock("$packageName:$MULTICAST_LOCK_TAG").apply {
-                setReferenceCounted(false)
-                multicastLock = this
-            }
-        }
-        if (!lock.isHeld) {
-            lock.acquire()
-        }
-    }
-
-    private fun releaseMulticastLock() {
-        val lock = multicastLock
-        if (lock?.isHeld == true) {
-            lock.release()
-        }
-    }
-
     private fun showControl(control: View) {
         control.bringToFront()
         control.translationZ = CONTROL_OVERLAY_ELEVATION_DP * resources.displayMetrics.density
@@ -704,26 +676,6 @@ class MainActivity : Activity() {
         } else {
             startService(intent)
         }
-    }
-
-    private fun stopReceiverForegroundService() {
-        stopService(Intent(this, ReceiverForegroundService::class.java))
-    }
-
-    private fun stopServer() {
-        if (!isStarted) {
-            return
-        }
-        dnsNotify.stop()
-        airPlayServer.stopServer()
-        raopServer.stopServer()
-        isStarted = false
-        lastWakeNudgeAtMs = 0L
-        wakeNudgePending = false
-        allowScreenSaver()
-        releaseWakeNudgeLock()
-        releaseMulticastLock()
-        stopReceiverForegroundService()
     }
 
     private enum class WakeMode(val preferenceValue: String, val radioButtonId: Int) {
@@ -757,7 +709,6 @@ class MainActivity : Activity() {
         private const val TAG = "Receiver"
         private const val WAKE_LOCK_TAG = "ReceiverActive"
         private const val WAKE_NUDGE_LOCK_TAG = "ReceiverActivity"
-        private const val MULTICAST_LOCK_TAG = "ReceiverDiscovery"
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
         private const val CONTROL_OVERLAY_ELEVATION_DP = 24f

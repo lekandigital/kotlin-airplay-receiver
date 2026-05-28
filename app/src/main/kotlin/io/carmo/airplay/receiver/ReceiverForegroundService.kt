@@ -11,17 +11,29 @@ import android.os.IBinder
 
 class ReceiverForegroundService : Service() {
 
+    private lateinit var runtime: ReceiverRuntime
+
     override fun onCreate() {
         super.onCreate()
+        runtime = ReceiverRuntime.get(applicationContext)
         startAsForeground()
+        runtime.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
+        runtime.start()
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        if (::runtime.isInitialized) {
+            runtime.stop()
+        }
+        super.onDestroy()
+    }
 
     private fun startAsForeground() {
         createNotificationChannel()
