@@ -24,6 +24,7 @@ class DNSNotify(
 
     fun registerAirplay(port: Int) {
         Log.d(TAG, "registerAirplay port = $port, macAddress = $macAddress")
+        val serviceName = airplayServiceName()
         val attributes = mapOf(
             "deviceid" to macAddress,
             "features" to "0x5A7FFFF7,0x1E",
@@ -37,12 +38,12 @@ class DNSNotify(
             "pi" to "2e388006-13ba-4041-9a67-25dd4a43d536"
         )
         val serviceType = "_airplay._tcp."
-        if (airplayRegister?.matches(deviceName, serviceType, port, attributes) == true) {
+        if (airplayRegister?.matches(serviceName, serviceType, port, attributes) == true) {
             return
         }
         airplayRegister?.stop()
         updateRegistrationStatus(AIRPLAY_LABEL, "AirPlay announcing on port $port")
-        airplayRegister = NsdRegister(nsdManager, deviceName, serviceType, port, attributes, AIRPLAY_LABEL, ::updateRegistrationStatus)
+        airplayRegister = NsdRegister(nsdManager, serviceName, serviceType, port, attributes, AIRPLAY_LABEL, ::updateRegistrationStatus)
     }
 
     fun registerRaop(port: Int) {
@@ -87,6 +88,20 @@ class DNSNotify(
             deviceName
         }
         return "$prefix$name"
+    }
+
+    private fun airplayServiceName(): String {
+        // Android 14's NSD stack can keep built-in TV service names reserved long
+        // enough for a same-name _airplay._tcp registration to fail as a conflict.
+        if (Build.VERSION.SDK_INT < ANDROID_14_API) {
+            return deviceName
+        }
+        return if (deviceName.endsWith(AIRPLAY_SERVICE_SUFFIX, ignoreCase = true)) {
+            deviceName.take(MAX_SERVICE_NAME_LENGTH)
+        } else {
+            val maxBaseNameLength = (MAX_SERVICE_NAME_LENGTH - AIRPLAY_SERVICE_SUFFIX.length).coerceAtLeast(1)
+            "${deviceName.take(maxBaseNameLength).trimEnd()}$AIRPLAY_SERVICE_SUFFIX"
+        }
     }
 
     private fun updateRegistrationStatus(label: String, status: String) {
@@ -221,6 +236,8 @@ class DNSNotify(
         private const val AIRPLAY_LABEL = "AirPlay"
         private const val RAOP_LABEL = "RAOP"
         private const val MAX_SERVICE_NAME_LENGTH = 63
+        private const val ANDROID_14_API = 34
+        private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
 
         private fun resolveDeviceName(context: Context): String {
             val configuredName = Settings.Global.getString(context.contentResolver, "device_name")
