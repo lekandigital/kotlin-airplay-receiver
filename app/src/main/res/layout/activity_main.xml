@@ -200,6 +200,43 @@
             android:progress="100"
             android:progressTint="#FF7DB7FF"
             android:progressBackgroundTint="#4DFFFFFF" />
+
+        <CheckBox
+            android:id="@+id/start_on_boot_toggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:buttonTint="#E6FFFFFF"
+            android:text="@string/start_on_boot_label"
+            android:textColor="#E6FFFFFF"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:id="@+id/overlay_permission_explanation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/overlay_permission_text"
+                android:layout_width="360dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:lineSpacingExtra="3dp"
+                android:text="@string/permission_overlay_explanation"
+                android:textColor="#CCFFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/overlay_permission_button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/permission_overlay_button" />
+        </LinearLayout>
     </LinearLayout>
 
     <LinearLayout

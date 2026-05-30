@@ -10,7 +10,7 @@ import java.util.Locale
 import java.util.concurrent.locks.ReentrantLock
 
 class DNSNotify(
-    context: Context,
+    private val context: Context,
     private val onStatusChanged: (String) -> Unit = {}
 ) {
 
@@ -18,7 +18,7 @@ class DNSNotify(
     private var airplayRegister: NsdRegister? = null
     private var raopRegister: NsdRegister? = null
     val deviceName: String = resolveDeviceName(context)
-    private val macAddress: String = NetUtils.localMacAddress()
+    private val macAddress: String = ReceiverIdentity.receiverId(context)
     private var airplayStatus: String = "AirPlay idle"
     private var raopStatus: String = "RAOP idle"
 
@@ -80,7 +80,7 @@ class DNSNotify(
     }
 
     private fun raopServiceName(): String {
-        val prefix = "${macAddress.replace(":", "")}@"
+        val prefix = ReceiverIdentity.raopPrefix(context)
         val maxNameLength = (MAX_SERVICE_NAME_LENGTH - prefix.length).coerceAtLeast(1)
         val name = if (deviceName.length > maxNameLength) {
             deviceName.substring(0, maxNameLength)
@@ -91,11 +91,8 @@ class DNSNotify(
     }
 
     private fun airplayServiceName(): String {
-        // Android 14's NSD stack can keep built-in TV service names reserved long
-        // enough for a same-name _airplay._tcp registration to fail as a conflict.
-        if (Build.VERSION.SDK_INT < ANDROID_14_API) {
-            return deviceName
-        }
+        // The AirPlay service name must be distinct from the RAOP service name
+        // and from other _airplay._tcp services on the same network.
         return if (deviceName.endsWith(AIRPLAY_SERVICE_SUFFIX, ignoreCase = true)) {
             deviceName.take(MAX_SERVICE_NAME_LENGTH)
         } else {
@@ -236,7 +233,6 @@ class DNSNotify(
         private const val AIRPLAY_LABEL = "AirPlay"
         private const val RAOP_LABEL = "RAOP"
         private const val MAX_SERVICE_NAME_LENGTH = 63
-        private const val ANDROID_14_API = 34
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
 
         private fun resolveDeviceName(context: Context): String {

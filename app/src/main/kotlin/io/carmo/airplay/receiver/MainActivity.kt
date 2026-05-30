@@ -1,20 +1,28 @@
 package io.carmo.airplay.receiver
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.PixelFormat
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.CheckBox
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.RadioGroup
@@ -23,7 +31,9 @@ import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
 
-    private lateinit var runtime: ReceiverRuntime
+    private var runtime: ReceiverRuntime? = null
+    private var isBound = false
+    private var isSurfaceAvailable = false
     private lateinit var playbackSurface: SurfaceView
     private lateinit var startupPanel: View
     private lateinit var startupVersionLabel: TextView
@@ -36,6 +46,9 @@ class MainActivity : Activity() {
     private lateinit var audioVolumeOverlay: View
     private lateinit var audioVolumeOverlayLabel: TextView
     private lateinit var audioVolumeOverlayBar: ProgressBar
+    private lateinit var overlayPermissionExplanation: View
+    private lateinit var overlayPermissionButton: Button
+    private lateinit var startOnBootToggle: CheckBox
     private lateinit var trafficMonitor: TrafficMonitorView
     private lateinit var audioManager: AudioManager
     private var screenWakeLock: PowerManager.WakeLock? = null
@@ -53,48 +66,101 @@ class MainActivity : Activity() {
     private var trafficGestureStartY = 0f
     private var isTrafficGestureCandidate = false
     private var isStreaming = false
+    private var streamVideoWidth = 0
+    private var streamVideoHeight = 0
     private var receiverDeviceName = "Receiver"
     private var discoveryStatus = "Discovery starting"
-    private var streamStatus = "Stream idle"
+    private var streamStatus = "Waiting"
 
-    private val runtimeListener = object : ReceiverRuntime.Listener {
-        override fun onRuntimeStateChanged(state: ReceiverRuntime.State) {
-            runOnUiThread {
-                receiverDeviceName = state.deviceName
-                discoveryStatus = state.discoveryStatus
-                streamStatus = state.streamStatus
-                syncPlaybackChrome(state)
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName, service: IBinder) {
+            val binder = service as ReceiverForegroundService.ReceiverBinder
+            val boundRuntime = binder.runtime
+            runtime = boundRuntime
+            isBound = true
+            registerRuntimeListeners(boundRuntime)
+            receiverDeviceName = boundRuntime.deviceDisplayName
+            discoveryStatus = boundRuntime.discoveryStatus
+            streamStatus = boundRuntime.streamStatus
+            syncRuntimeSettings(boundRuntime)
+            attachSurfaceIfReady(boundRuntime)
+            handleReceiverState(boundRuntime.state)
+            checkOverlayPermission()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName) {
+            runtime?.let(::unregisterRuntimeListeners)
+            runtime = null
+            isBound = false
+        }
+    }
+
+    private val surfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            isSurfaceAvailable = true
+            runtime?.attachSurface(holder.surface)
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            if (holder.surface.isValid) {
+                isSurfaceAvailable = true
+                runtime?.attachSurface(holder.surface)
             }
         }
 
-        override fun onRuntimeConnectionStarted() {
-            hideStatus()
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            isSurfaceAvailable = false
+            runtime?.detachSurface()
         }
+    }
 
-        override fun onRuntimeVideoActivity(hasVideoActivity: Boolean) {
-            handleVideoActivity(hasVideoActivity)
+    private val stateListener: (ReceiverState) -> Unit = { state ->
+        runOnUiThread {
+            handleReceiverState(state)
         }
+    }
 
-        override fun onRuntimeTrafficSample(byteCount: Int) {
-            runOnUiThread {
-                handleTrafficSample(byteCount)
+    private val discoveryStatusListener: (String) -> Unit = { status ->
+        runOnUiThread {
+            discoveryStatus = status
+            if (!isStreaming && ::discoveryStatusView.isInitialized) {
+                discoveryStatusView.text = status
             }
         }
+    }
 
-        override fun onRuntimeLatencySample(latencyMs: Long) {
-            runOnUiThread {
-                handleLatencySample(latencyMs)
-            }
+    private val streamStatusListener: (String) -> Unit = { status ->
+        runOnUiThread {
+            showStreamStatus(status)
         }
+    }
 
-        override fun onRuntimeStreamStopped() {
-            handleStreamStopped()
+    private val videoActivityListener: (Boolean) -> Unit = { hasVideoActivity ->
+        handleVideoActivity(hasVideoActivity)
+    }
+
+    private val videoSizeListener: (Int, Int) -> Unit = { width, height ->
+        runOnUiThread {
+            streamVideoWidth = width
+            streamVideoHeight = height
+            updateSurfaceLayout(playbackSurface)
+        }
+    }
+
+    private val trafficListener: (Int) -> Unit = { byteCount ->
+        runOnUiThread {
+            handleTrafficSample(byteCount)
+        }
+    }
+
+    private val latencyListener: (Long) -> Unit = { latencyMs ->
+        runOnUiThread {
+            handleLatencySample(latencyMs)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        runtime = ReceiverRuntime.get(applicationContext)
         setContentView(R.layout.activity_main)
         configurePlaybackWindow()
 
@@ -110,9 +176,13 @@ class MainActivity : Activity() {
         audioVolumeOverlay = findViewById(R.id.audio_volume_overlay)
         audioVolumeOverlayLabel = findViewById(R.id.audio_volume_overlay_label)
         audioVolumeOverlayBar = findViewById(R.id.audio_volume_overlay_bar)
+        overlayPermissionExplanation = findViewById(R.id.overlay_permission_explanation)
+        overlayPermissionButton = findViewById(R.id.overlay_permission_button)
+        startOnBootToggle = findViewById(R.id.start_on_boot_toggle)
         trafficMonitor = findViewById(R.id.traffic_monitor)
         trafficMonitor.setOnClickListener { trafficMonitor.visibility = View.GONE }
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
         configurePlaybackSurface(playbackSurface)
         configureControlLayer()
 
@@ -123,11 +193,12 @@ class MainActivity : Activity() {
         configureVideoModeControl()
         configureWakeModeControl()
         configureAudioControls()
-        runtime.addListener(runtimeListener)
+        configureStartOnBootControl()
+        checkOverlayPermission()
+        updateWaitingStatus()
+
         startReceiverForegroundService()
-        runtime.start()
-        runtime.attachSurface(playbackSurface, videoMode.width, videoMode.height, audioVolume)
-        syncPlaybackChrome(runtime.snapshot())
+        bindReceiverForegroundService()
 
         if (DEBUG_CODECS) {
             logSupportedCodecs()
@@ -140,10 +211,14 @@ class MainActivity : Activity() {
             audioVolume = loadAudioVolume()
             updateAudioVolumeUi()
         }
-        if (runtime.snapshot().isStarted) {
-            applyWakeMode()
-            runtime.refreshAnnouncements()
+        runtime?.let {
+            syncRuntimeSettings(it)
+            if (it.state != ReceiverState.STOPPED) {
+                applyWakeMode()
+                it.refreshDiscovery()
+            }
         }
+        checkOverlayPermission()
         if (::startupPanel.isInitialized && !isStreaming) {
             updateWaitingStatus()
         }
@@ -152,25 +227,21 @@ class MainActivity : Activity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && ::startupPanel.isInitialized) {
-            // Only re-assert immersive flags if they actually drifted. Writing
-            // systemUiVisibility unconditionally on every focus event —
-            // including the brief focus blip when a tap reveals the system
-            // bars under FLAG_IMMERSIVE_STICKY — forces a layout pass that
-            // shows up as a flicker on the startup panel.
             ensureImmersiveFlags()
-            if (runtime.snapshot().isStarted) {
+            if (runtime?.state != ReceiverState.STOPPED) {
                 applyWakeMode()
             }
-            // Note: text is intentionally NOT refreshed here. Nothing observable
-            // by the user changes between focus events, so rewriting it just
-            // adds a needless redraw cycle.
         }
     }
 
     override fun onDestroy() {
-        if (::runtime.isInitialized && ::playbackSurface.isInitialized) {
-            runtime.detachSurface(playbackSurface)
-            runtime.removeListener(runtimeListener)
+        runtime?.let { boundRuntime ->
+            boundRuntime.detachSurface()
+            unregisterRuntimeListeners(boundRuntime)
+        }
+        if (isBound) {
+            unbindService(serviceConnection)
+            isBound = false
         }
         allowScreenSaver()
         releaseWakeNudgeLock()
@@ -185,6 +256,39 @@ class MainActivity : Activity() {
         return super.dispatchTouchEvent(event)
     }
 
+    private fun registerRuntimeListeners(boundRuntime: ReceiverRuntime) {
+        boundRuntime.addStateListener(stateListener)
+        boundRuntime.addDiscoveryStatusListener(discoveryStatusListener)
+        boundRuntime.addStreamStatusListener(streamStatusListener)
+        boundRuntime.addVideoActivityListener(videoActivityListener)
+        boundRuntime.addVideoSizeListener(videoSizeListener)
+        boundRuntime.addTrafficListener(trafficListener)
+        boundRuntime.addLatencyListener(latencyListener)
+    }
+
+    private fun unregisterRuntimeListeners(boundRuntime: ReceiverRuntime) {
+        boundRuntime.removeStateListener(stateListener)
+        boundRuntime.removeDiscoveryStatusListener(discoveryStatusListener)
+        boundRuntime.removeStreamStatusListener(streamStatusListener)
+        boundRuntime.removeVideoActivityListener(videoActivityListener)
+        boundRuntime.removeVideoSizeListener(videoSizeListener)
+        boundRuntime.removeTrafficListener(trafficListener)
+        boundRuntime.removeLatencyListener(latencyListener)
+    }
+
+    private fun syncRuntimeSettings(boundRuntime: ReceiverRuntime) {
+        boundRuntime.setVideoMode(videoMode.width, videoMode.height)
+        boundRuntime.setAudioVolume(audioVolume)
+    }
+
+    private fun attachSurfaceIfReady(boundRuntime: ReceiverRuntime) {
+        val surface = playbackSurface.holder.surface
+        if (surface != null && surface.isValid) {
+            isSurfaceAvailable = true
+            boundRuntime.attachSurface(surface)
+        }
+    }
+
     private fun configurePlaybackWindow() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -193,11 +297,7 @@ class MainActivity : Activity() {
         ensureImmersiveFlags()
     }
 
-    /**
-     * Idempotent: only rewrites the system-UI visibility bitmask when it has
-     * actually drifted from our desired value. This keeps tap-induced focus
-     * blips from triggering a redundant layout pass on the startup panel.
-     */
+    @Suppress("DEPRECATION")
     private fun ensureImmersiveFlags() {
         val decor = window.decorView
         if (decor.systemUiVisibility != IMMERSIVE_FLAGS) {
@@ -209,6 +309,7 @@ class MainActivity : Activity() {
         surfaceView.setZOrderOnTop(false)
         surfaceView.setZOrderMediaOverlay(false)
         surfaceView.holder.setFormat(PixelFormat.OPAQUE)
+        surfaceView.holder.addCallback(surfaceCallback)
     }
 
     private fun configureControlLayer() {
@@ -341,11 +442,13 @@ class MainActivity : Activity() {
             return
         }
 
+        val sourceWidth = if (streamVideoWidth > 0) streamVideoWidth else videoMode.width
+        val sourceHeight = if (streamVideoHeight > 0) streamVideoHeight else videoMode.height
         var width = parentWidth
-        var height = width * videoMode.height / videoMode.width
+        var height = width * sourceHeight / sourceWidth
         if (height > parentHeight) {
             height = parentHeight
-            width = height * videoMode.width / videoMode.height
+            width = height * sourceWidth / sourceHeight
         }
 
         val currentParams = surfaceView.layoutParams
@@ -354,8 +457,30 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun handleReceiverState(state: ReceiverState) {
+        when (state) {
+            ReceiverState.IDLE_ADVERTISING -> {
+                showWaitingStatus()
+                applyWakeMode()
+            }
+            ReceiverState.VIDEO_ACTIVE -> hideStatus()
+            ReceiverState.AUDIO_ACTIVE -> showAudioOnlyStatus()
+            ReceiverState.VIDEO_STALLED -> showStreamStatus(getString(R.string.status_recovering))
+            ReceiverState.STARTING,
+            ReceiverState.STOPPED,
+            ReceiverState.ERROR_RECOVERABLE -> showWaitingStatus()
+            else -> Unit
+        }
+    }
+
     private fun showWaitingStatus() {
         isStreaming = false
+        streamVideoWidth = 0
+        streamVideoHeight = 0
+        if (streamStatus.isBlank() || streamStatus == getString(R.string.status_streaming)) {
+            streamStatus = "Waiting"
+        }
+        updateSurfaceLayout(playbackSurface)
         updateWaitingStatus()
         if (startupVersionLabel.visibility != View.VISIBLE) {
             startupVersionLabel.visibility = View.VISIBLE
@@ -370,49 +495,41 @@ class MainActivity : Activity() {
         showControl(startupPanel)
     }
 
-    private fun syncPlaybackChrome(state: ReceiverRuntime.State) {
-        if (!::startupPanel.isInitialized) {
-            return
-        }
-        if (state.isStreaming) {
-            hideStatus()
-            return
-        }
-        if (!isStreaming) {
-            updateWaitingStatus()
-        }
+    private fun showAudioOnlyStatus() {
+        isStreaming = false
+        streamStatus = getString(R.string.status_audio_only)
+        updateWaitingStatus()
+        startupVersionLabel.visibility = View.VISIBLE
+        startupPanel.visibility = View.VISIBLE
+        audioVolumeOverlay.visibility = View.GONE
+        showControl(startupVersionLabel)
+        showControl(startupPanel)
     }
 
     private fun updateWaitingStatus() {
         startupVersionLabel.text = "v${BuildConfig.VERSION_NAME}"
-        statusView.text = "$receiverDeviceName\nWaiting in ${videoMode.label} mode\n$streamStatus"
-        discoveryStatusView.text = discoveryStatus
-    }
-
-    private fun handleDiscoveryStatus(status: String) {
-        discoveryStatus = status
-        runOnUiThread {
-            if (::discoveryStatusView.isInitialized && !isStreaming) {
-                discoveryStatusView.text = status
-            }
+        val status = if (streamStatus == getString(R.string.status_audio_only)) {
+            getString(R.string.status_audio_only)
+        } else {
+            "${getString(R.string.status_waiting)} in ${videoMode.label} mode\n$streamStatus"
         }
+        statusView.text = "$receiverDeviceName\n$status"
+        discoveryStatusView.text = discoveryStatus
     }
 
     private fun hideStatus() {
         runOnUiThread {
             isStreaming = true
-            streamStatus = "Streaming"
+            streamStatus = getString(R.string.status_streaming)
             startupPanel.visibility = View.GONE
             startupVersionLabel.visibility = View.GONE
         }
     }
 
-    private fun handleStreamStatus(status: String) {
-        runOnUiThread {
-            streamStatus = status
-            if (::statusView.isInitialized && !isStreaming) {
-                updateWaitingStatus()
-            }
+    private fun showStreamStatus(status: String) {
+        streamStatus = status
+        if (::statusView.isInitialized && !isStreaming) {
+            updateWaitingStatus()
         }
     }
 
@@ -425,7 +542,7 @@ class MainActivity : Activity() {
             }
             videoMode = selectedMode
             saveVideoMode(selectedMode)
-            runtime.setVideoMode(selectedMode.width, selectedMode.height)
+            runtime?.setVideoMode(selectedMode.width, selectedMode.height)
             updateSurfaceLayout(playbackSurface)
             if (!isStreaming) {
                 updateWaitingStatus()
@@ -448,6 +565,34 @@ class MainActivity : Activity() {
 
     private fun configureAudioControls() {
         updateAudioVolumeUi()
+    }
+
+    private fun configureStartOnBootControl() {
+        val preferences = getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+        startOnBootToggle.isChecked = preferences.getBoolean(PREFERENCE_START_ON_BOOT, true)
+        startOnBootToggle.setOnCheckedChangeListener { _, isChecked ->
+            preferences.edit().putBoolean(PREFERENCE_START_ON_BOOT, isChecked).apply()
+        }
+    }
+
+    private fun checkOverlayPermission() {
+        if (!::overlayPermissionExplanation.isInitialized) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
+            overlayPermissionExplanation.visibility = View.GONE
+            return
+        }
+        showOverlayPermissionExplanation()
+    }
+
+    private fun showOverlayPermissionExplanation() {
+        overlayPermissionExplanation.visibility = View.VISIBLE
+        overlayPermissionButton.setOnClickListener {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        }
     }
 
     private fun loadWakeMode(): WakeMode {
@@ -495,7 +640,7 @@ class MainActivity : Activity() {
         if (persist) {
             saveAudioVolume(audioVolume)
         }
-        runtime.setAudioVolume(audioVolume)
+        runtime?.setAudioVolume(audioVolume)
         updateAudioVolumeUi()
         if (isStreaming) {
             showAudioVolumeOverlay()
@@ -568,24 +713,7 @@ class MainActivity : Activity() {
         trafficMonitor.recordLatency(latencyMs)
     }
 
-    private fun handleStreamStopped() {
-        runOnUiThread {
-            if (isFinishing) {
-                return@runOnUiThread
-            }
-            isStreaming = false
-            streamStatus = "Stream idle"
-            showWaitingStatus()
-            runtime.refreshAnnouncements()
-            applyWakeMode()
-        }
-    }
-
     private fun handleTrafficMonitorGesture(event: MotionEvent) {
-        // The traffic monitor is only meaningful while video is streaming, so
-        // ignore gesture detection entirely when the startup panel is up. This
-        // also stops accidental top-right taps on the version label from
-        // "arming" the gesture and changing visible state on the next move.
         if (!isStreaming) {
             isTrafficGestureCandidate = false
             return
@@ -687,6 +815,11 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun bindReceiverForegroundService() {
+        val intent = Intent(this, ReceiverForegroundService::class.java)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
     private enum class WakeMode(val preferenceValue: String, val radioButtonId: Int) {
         DEFAULT("default", R.id.wake_mode_default),
         ALWAYS_AWAKE("always_awake", R.id.wake_mode_always),
@@ -733,6 +866,7 @@ class MainActivity : Activity() {
         private const val PREFERENCES_NAME = "receiver"
         private const val PREFERENCE_VIDEO_MODE_V2 = "video_mode_v2"
         private const val PREFERENCE_WAKE_MODE = "wake_mode"
+        private const val PREFERENCE_START_ON_BOOT = "start_on_boot"
         private const val DEBUG_CODECS = false
 
         @Suppress("DEPRECATION")

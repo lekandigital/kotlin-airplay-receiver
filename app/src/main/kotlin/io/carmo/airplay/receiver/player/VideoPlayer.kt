@@ -17,12 +17,14 @@ class VideoPlayer(
     private val width: Int,
     private val height: Int,
     private val onLatencySample: (Long) -> Unit = {},
-    private val onFrameRendered: () -> Unit = {}
+    private val onFrameRendered: () -> Unit = {},
+    private val onOutputSizeChanged: (Int, Int) -> Unit = { _, _ -> }
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
     private val packets = ArrayBlockingQueue<NALPacket>(MAX_BUFFERED_FRAMES)
     private var decoder: MediaCodec? = null
+    @Volatile private var pendingCodecConfig: NALPacket? = null
     @Volatile private var isStopped = false
     @Volatile private var hasRenderedFirstFrame = false
 
@@ -33,25 +35,39 @@ class VideoPlayer(
     private var renderedFrames = 0L
     private var lastDropLogAtMs = 0L
     private var lastRenderLogAtMs = 0L
+    private var lastOutputWidth = 0
+    private var lastOutputHeight = 0
 
     /** True once the decoder has produced and rendered at least one frame. */
     fun hasRenderedFirstFrame(): Boolean = hasRenderedFirstFrame
 
     fun addPacket(packet: NALPacket) {
-        synchronized(packets) {
-            if (packet.isCodecConfig) {
-                drainPackets()
-                if (!packets.offer(packet)) {
-                    packet.release()
-                }
-                return
+        if (packet.isCodecConfig) {
+            val old = pendingCodecConfig
+            pendingCodecConfig = packet
+            old?.release()
+            synchronized(packets) {
+                offerPendingCodecConfigLocked()
             }
+            return
+        }
 
+        synchronized(packets) {
+            offerPendingCodecConfigLocked()
             trimBacklog()
+            offerPendingCodecConfigLocked()
             if (!packets.offer(packet)) {
                 packet.release()
-                return
             }
+        }
+    }
+
+    private fun offerPendingCodecConfigLocked() {
+        val config = pendingCodecConfig ?: return
+        if (packets.offer(config)) {
+            pendingCodecConfig = null
+        } else {
+            Log.w(TAG, "video queue full; codec config pending until SPS/PPS replay")
         }
     }
 
@@ -192,6 +208,7 @@ class VideoPlayer(
                     pendingRenderIndex = outputBufferIndex
                 }
                 outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    handleOutputFormatChanged(codec.outputFormat)
                     if (DEBUG_FRAMES) {
                         Log.d(TAG, "output format changed: ${codec.outputFormat}")
                     }
@@ -207,6 +224,47 @@ class VideoPlayer(
             return true
         }
         return false
+    }
+
+    private fun handleOutputFormatChanged(format: MediaFormat) {
+        val outputWidth = outputDimension(
+            format = format,
+            sizeKey = MediaFormat.KEY_WIDTH,
+            cropStartKey = FORMAT_KEY_CROP_LEFT,
+            cropEndKey = FORMAT_KEY_CROP_RIGHT
+        )
+        val outputHeight = outputDimension(
+            format = format,
+            sizeKey = MediaFormat.KEY_HEIGHT,
+            cropStartKey = FORMAT_KEY_CROP_TOP,
+            cropEndKey = FORMAT_KEY_CROP_BOTTOM
+        )
+        if (outputWidth <= 0 || outputHeight <= 0) {
+            return
+        }
+        if (outputWidth == lastOutputWidth && outputHeight == lastOutputHeight) {
+            return
+        }
+        lastOutputWidth = outputWidth
+        lastOutputHeight = outputHeight
+        Log.i(TAG, "decoder output size = ${outputWidth}x${outputHeight}")
+        onOutputSizeChanged(outputWidth, outputHeight)
+    }
+
+    private fun outputDimension(
+        format: MediaFormat,
+        sizeKey: String,
+        cropStartKey: String,
+        cropEndKey: String
+    ): Int {
+        if (format.containsKey(cropStartKey) && format.containsKey(cropEndKey)) {
+            val start = format.getInteger(cropStartKey)
+            val end = format.getInteger(cropEndKey)
+            if (end >= start) {
+                return end - start + 1
+            }
+        }
+        return if (format.containsKey(sizeKey)) format.getInteger(sizeKey) else 0
     }
 
     private fun trimBacklog() {
@@ -239,8 +297,12 @@ class VideoPlayer(
     }
 
     private fun drainPackets() {
-        while (true) {
-            packets.poll()?.release() ?: break
+        synchronized(packets) {
+            while (true) {
+                packets.poll()?.release() ?: break
+            }
+            pendingCodecConfig?.release()
+            pendingCodecConfig = null
         }
     }
 
@@ -260,13 +322,17 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 96
-        private const val MAX_QUEUED_FRAMES = 72
+        private const val MAX_BUFFERED_FRAMES = 16
+        private const val MAX_QUEUED_FRAMES = 12
         private const val DROP_LOG_INTERVAL_MS = 2_000L
         private const val RENDER_LOG_INTERVAL_MS = 5_000L
         private const val MIME_TYPE = "video/avc"
         private const val VIDEO_OPERATING_RATE = 60.0f
         private const val TIMEOUT_USEC = 1000L
+        private const val FORMAT_KEY_CROP_LEFT = "crop-left"
+        private const val FORMAT_KEY_CROP_RIGHT = "crop-right"
+        private const val FORMAT_KEY_CROP_TOP = "crop-top"
+        private const val FORMAT_KEY_CROP_BOTTOM = "crop-bottom"
 
         private fun decoderSupportsAdaptivePlayback(decoderInfo: MediaCodecInfo, mimeType: String): Boolean {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {

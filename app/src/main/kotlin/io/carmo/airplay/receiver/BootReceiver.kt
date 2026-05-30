@@ -6,15 +6,27 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 
+/**
+ * Starts the receiver service on device boot and after package updates.
+ */
 class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        if (action !in START_ACTIONS) {
+        if (action != Intent.ACTION_BOOT_COMPLETED &&
+            action != Intent.ACTION_LOCKED_BOOT_COMPLETED &&
+            action != Intent.ACTION_MY_PACKAGE_REPLACED) {
             return
         }
 
-        Log.i(TAG, "starting receiver after $action")
+        val prefs = context.getSharedPreferences("receiver", Context.MODE_PRIVATE)
+        val startOnBoot = prefs.getBoolean("start_on_boot", true)
+        if (!startOnBoot && action != Intent.ACTION_MY_PACKAGE_REPLACED) {
+            Log.d(TAG, "start on boot disabled; skipping")
+            return
+        }
+
+        Log.i(TAG, "starting receiver service (action=$action)")
         val serviceIntent = Intent(context, ReceiverForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -25,10 +37,5 @@ class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "Receiver-Boot"
-        private val START_ACTIONS = setOf(
-            Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED,
-            "android.intent.action.QUICKBOOT_POWERON"
-        )
     }
 }
