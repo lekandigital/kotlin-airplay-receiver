@@ -21,6 +21,155 @@
 typedef void (*raop_handler_t)(raop_conn_t *, http_request_t *,
                                http_response_t *, char **, int *);
 
+#define RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO 0x1000000ULL
+#define RAOP_COMPRESSION_TYPE_ALAC 2ULL
+#define RAOP_COMPRESSION_TYPE_AAC_ELD 8ULL
+
+static uint64_t
+raop_handler_get_uint(plist_t dict, const char *key, int *has_value)
+{
+	uint64_t value = 0;
+	if (has_value) {
+		*has_value = 0;
+	}
+	if (!dict || plist_get_node_type(dict) != PLIST_DICT) {
+		return 0;
+	}
+	plist_t node = plist_dict_get_item(dict, key);
+	if (!node || plist_get_node_type(node) != PLIST_UINT) {
+		return 0;
+	}
+	plist_get_uint_val(node, &value);
+	if (has_value) {
+		*has_value = 1;
+	}
+	return value;
+}
+
+static int
+raop_handler_audio_setup_is_supported(plist_t stream_note, logger_t *logger)
+{
+	int has_compression_type = 0;
+	int has_audio_format = 0;
+	int has_samples_per_frame = 0;
+	uint64_t compression_type = raop_handler_get_uint(stream_note, "ct", &has_compression_type);
+	uint64_t audio_format = raop_handler_get_uint(stream_note, "audioFormat", &has_audio_format);
+	uint64_t samples_per_frame = raop_handler_get_uint(stream_note, "spf", &has_samples_per_frame);
+
+	if (has_compression_type && compression_type == RAOP_COMPRESSION_TYPE_ALAC) {
+		logger_log(logger, LOGGER_WARNING,
+		           "Unsupported audio SETUP: ALAC requested (ct=%llu, audioFormat=0x%llx, spf=%llu)",
+		           compression_type, audio_format, samples_per_frame);
+		return 0;
+	}
+
+	if (has_audio_format && audio_format != RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO) {
+		logger_log(logger, LOGGER_WARNING,
+		           "Unsupported audio SETUP: audioFormat=0x%llx (expected AAC-ELD 44.1 stereo 0x%llx)",
+		           audio_format, RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO);
+		return 0;
+	}
+
+	if (has_compression_type && compression_type != RAOP_COMPRESSION_TYPE_AAC_ELD) {
+		logger_log(logger, LOGGER_WARNING,
+		           "Unsupported audio SETUP: ct=%llu (expected AAC-ELD ct=%llu)",
+		           compression_type, RAOP_COMPRESSION_TYPE_AAC_ELD);
+		return 0;
+	}
+
+	if (has_samples_per_frame && samples_per_frame != 480) {
+		logger_log(logger, LOGGER_WARNING,
+		           "Unsupported audio SETUP: spf=%llu (expected AAC-ELD spf=480)",
+		           samples_per_frame);
+		return 0;
+	}
+
+	return 1;
+}
+
+static void
+raop_handler_restrict_audio_formats(plist_t root_node)
+{
+	plist_t audio_formats = plist_dict_get_item(root_node, "audioFormats");
+	uint32_t audio_format_count = audio_formats ? plist_array_get_size(audio_formats) : 0;
+	for (uint32_t i = 0; i < audio_format_count; i++) {
+		plist_t format = plist_array_get_item(audio_formats, i);
+		if (!format) {
+			continue;
+		}
+		plist_dict_set_item(format, "audioInputFormats", plist_new_uint(RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
+		plist_dict_set_item(format, "audioOutputFormats", plist_new_uint(RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
+	}
+}
+
+static void
+raop_handler_log_dict_summary(logger_t *logger, const char *label, plist_t dict)
+{
+	if (!dict || plist_get_node_type(dict) != PLIST_DICT) {
+		logger_log(logger, LOGGER_DEBUG, "%s: <none>", label);
+		return;
+	}
+
+	plist_dict_iter iter = NULL;
+	plist_dict_new_iter(dict, &iter);
+	if (!iter) {
+		logger_log(logger, LOGGER_DEBUG, "%s: <iter failed>", label);
+		return;
+	}
+
+	char *key = NULL;
+	plist_t value = NULL;
+	while (1) {
+		plist_dict_next_item(dict, iter, &key, &value);
+		if (!key) {
+			break;
+		}
+		plist_type type = value ? plist_get_node_type(value) : PLIST_NONE;
+		switch (type) {
+		case PLIST_UINT: {
+			uint64_t v = 0;
+			plist_get_uint_val(value, &v);
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = %llu", label, key, v);
+			break;
+		}
+		case PLIST_BOOLEAN: {
+			uint8_t v = 0;
+			plist_get_bool_val(value, &v);
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = %s", label, key, v ? "true" : "false");
+			break;
+		}
+		case PLIST_STRING: {
+			char *v = NULL;
+			plist_get_string_val(value, &v);
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = %s", label, key, v ? v : "");
+			free(v);
+			break;
+		}
+		case PLIST_DATA: {
+			char *v = NULL;
+			uint64_t len = 0;
+			plist_get_data_val(value, &v, &len);
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = <data %llu bytes>", label, key, len);
+			free(v);
+			break;
+		}
+		case PLIST_ARRAY:
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = <array %u>", label, key, plist_array_get_size(value));
+			break;
+		case PLIST_DICT:
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = <dict>", label, key);
+			break;
+		default:
+			logger_log(logger, LOGGER_DEBUG, "%s.%s = <type %d>", label, key, type);
+			break;
+		}
+		free(key);
+		key = NULL;
+		value = NULL;
+	}
+	free(iter);
+}
+
 static void
 raop_handler_info(raop_conn_t *conn,
 					   http_request_t *request, http_response_t *response,
@@ -100,6 +249,7 @@ raop_handler_info(raop_conn_t *conn,
 		}
 		plist_dict_set_item(root_node, "widthPixels", plist_new_uint(video_width));
 		plist_dict_set_item(root_node, "heightPixels", plist_new_uint(video_height));
+		raop_handler_restrict_audio_formats(root_node);
 
 		uint32_t rsp_len = 0;
 		char* rsp = NULL;
@@ -300,8 +450,11 @@ raop_handler_setup(raop_conn_t *conn,
         http_response_set_disconnect(response, 1);
         return;
     }
+    logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP request: setup=%d datalen=%d use_udp=%d", conn->setup, datalen, use_udp);
+    raop_handler_log_dict_summary(conn->raop->logger, "setup", root_node);
     plist_t streams_note = plist_dict_get_item(root_node, "streams");
 	plist_t stream_note = streams_note ? plist_array_get_item(streams_note, 0) : NULL;
+    raop_handler_log_dict_summary(conn->raop->logger, "setup.stream0", stream_note);
 	uint64_t stream_type = 0;
 	int has_stream_type = 0;
 	if (stream_note) {
@@ -436,6 +589,13 @@ raop_handler_setup(raop_conn_t *conn,
     } else if ((has_stream_type && stream_type == 96) || conn->setup >= 2) {
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP audio");
         unsigned short cport = 0, tport = 0, dport = 0;
+
+        if (!stream_note || !raop_handler_audio_setup_is_supported(stream_note, conn->raop->logger)) {
+            conn_notify_stream_status(conn, "Unsupported AirPlay audio codec");
+            http_response_reset(response, "RTSP/1.0", 415, "Unsupported Media Type");
+            plist_free(root_node);
+            return;
+        }
 
         if (conn->setup < 3) {
             conn->setup = 3;

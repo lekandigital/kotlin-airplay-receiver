@@ -174,6 +174,15 @@ video_process(void *cls, h264_decode_struct *data)
 extern "C" void
 log_callback(void *cls, int level, const char *msg) {
     switch (level) {
+        case LOGGER_DEBUG: {
+            LOGD("%s", msg);
+            break;
+        }
+        case LOGGER_INFO:
+        case LOGGER_NOTICE: {
+            LOGI("%s", msg);
+            break;
+        }
         case LOGGER_WARNING: {
             LOGW("%s", msg);
             break;
@@ -243,7 +252,7 @@ Java_io_carmo_airplay_receiver_RaopServer_start(JNIEnv* env, jobject object) {
     }
 
     raop_set_log_callback(raop, log_callback, NULL);
-    raop_set_log_level(raop, RAOP_LOG_WARNING);
+    raop_set_log_level(raop, RAOP_LOG_DEBUG);
 
     unsigned short port = 0;
     raop_start(raop, &port);
