@@ -1,10 +1,7 @@
 package io.carmo.airplay.receiver.player
 
-import android.app.UiModeManager
 import android.content.Context
-import android.content.res.Configuration
 import android.media.AudioAttributes
-import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -275,7 +272,6 @@ class AudioPlayer(
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             audioTrack.setBufferSizeInFrames(bufferSize / BYTES_PER_FRAME)
-            preferHdmiOutput(audioTrack)
         }
         audioTrack.setVolume(volume)
         Log.i(
@@ -287,35 +283,6 @@ class AudioPlayer(
         return audioTrack
     }
 
-    private fun preferHdmiOutput(audioTrack: AudioTrack) {
-        if (!isTelevision() || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return
-        }
-
-        val preferredDevice = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .firstOrNull { device ->
-                device.type == AudioDeviceInfo.TYPE_HDMI ||
-                    device.type == AudioDeviceInfo.TYPE_HDMI_ARC ||
-                    device.type == AudioDeviceInfo.TYPE_HDMI_EARC
-            }
-
-        if (preferredDevice == null) {
-            Log.w(TAG, "preferred audio output unavailable: HDMI device not found")
-            return
-        }
-
-        val applied = audioTrack.setPreferredDevice(preferredDevice)
-        Log.i(
-            TAG,
-            "preferred audio output: type=${preferredDevice.type} " +
-                "name=${preferredDevice.productName} applied=$applied"
-        )
-    }
-
-    private fun isTelevision(): Boolean {
-        val uiModeManager = appContext.getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
-        return uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
-    }
 
     private fun bytesToMs(bytes: Int): Int {
         return bytes / BYTES_PER_FRAME * 1_000 / SAMPLE_RATE
