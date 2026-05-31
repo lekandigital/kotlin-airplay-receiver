@@ -110,7 +110,7 @@ class VideoPlayer(
             }
 
             codec.configure(videoFormat, surface, null, 0)
-            codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+            codec.setVideoScalingMode(chooseScalingMode(width, height, width, height))
             codec.start()
             decoder = codec
         } catch (e: Exception) {
@@ -317,6 +317,25 @@ class VideoPlayer(
         } catch (_: Exception) {
         }
         decoder = null
+    }
+
+    private fun chooseScalingMode(
+        surfaceWidth: Int,
+        surfaceHeight: Int,
+        videoWidth: Int,
+        videoHeight: Int
+    ): Int {
+        if (surfaceWidth <= 0 || surfaceHeight <= 0 || videoWidth <= 0 || videoHeight <= 0) {
+            return MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        }
+        val surfaceRatio = surfaceWidth.toFloat() / surfaceHeight
+        val videoRatio = videoWidth.toFloat() / videoHeight
+        val ratioDiff = kotlin.math.abs(surfaceRatio - videoRatio)
+        return if (surfaceWidth >= 1280 && ratioDiff < 0.05f) {
+            MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+        } else {
+            MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT
+        }
     }
 
     companion object {

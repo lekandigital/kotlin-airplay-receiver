@@ -22,6 +22,9 @@ class ReceiverForegroundService : Service() {
     private lateinit var networkMonitor: NetworkMonitor
     lateinit var runtime: ReceiverRuntime
         private set
+    private val stateListener: (ReceiverState) -> Unit = { state ->
+        updateNotification(state)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -39,15 +42,14 @@ class ReceiverForegroundService : Service() {
         )
         networkMonitor.start()
         startAsForeground()
+        runtime.addStateListener(stateListener)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
         if (runtime.state == ReceiverState.STOPPED) {
-            val prefs = getSharedPreferences("receiver", Context.MODE_PRIVATE)
-            val videoWidth = if (prefs.getString("video_mode_v2", "720p") == "1080p") 1920 else 1280
-            val videoHeight = if (prefs.getString("video_mode_v2", "720p") == "1080p") 1080 else 720
-            runtime.start(videoWidth, videoHeight, loadAudioVolume())
+            val videoSize = ReceiverPreferences.selectedVideoSize(this)
+            runtime.start(videoSize.width, videoSize.height, loadAudioVolume())
         }
         return START_STICKY
     }
@@ -59,6 +61,7 @@ class ReceiverForegroundService : Service() {
             networkMonitor.stop()
         }
         if (::runtime.isInitialized) {
+            runtime.removeStateListener(stateListener)
             runtime.stop()
         }
         super.onDestroy()
@@ -70,10 +73,25 @@ class ReceiverForegroundService : Service() {
 
     private fun startAsForeground() {
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification(notificationTextFor(runtime.state)))
     }
 
-    private fun buildNotification(): Notification {
+    private fun updateNotification(state: ReceiverState) {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIFICATION_ID, buildNotification(notificationTextFor(state)))
+    }
+
+    private fun notificationTextFor(state: ReceiverState): String {
+        return when (state) {
+            ReceiverState.IDLE_ADVERTISING -> getString(R.string.notification_waiting)
+            ReceiverState.AUDIO_ACTIVE -> getString(R.string.notification_audio_active)
+            ReceiverState.VIDEO_ACTIVE -> getString(R.string.notification_video_active)
+            ReceiverState.ERROR_RECOVERABLE -> getString(R.string.notification_error)
+            else -> getString(R.string.notification_receiver_active)
+        }
+    }
+
+    private fun buildNotification(text: String): Notification {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -88,7 +106,7 @@ class ReceiverForegroundService : Service() {
         return builder
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.notification_receiver_active))
+            .setContentText(text)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setShowWhen(false)

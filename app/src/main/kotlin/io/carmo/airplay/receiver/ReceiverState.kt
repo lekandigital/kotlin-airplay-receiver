@@ -58,3 +58,11 @@ data class StateTransition(
     val reason: String,
     val timestampMs: Long = System.currentTimeMillis()
 )
+
+data class ReceiverSessionStats(
+    val durationMs: Long = 0L,
+    val videoFramesRendered: Int = 0,
+    val decoderRestarts: Int = 0,
+    val audioUnderruns: Int = 0,
+    val preSurfacePacketsBuffered: Int = 0
+)

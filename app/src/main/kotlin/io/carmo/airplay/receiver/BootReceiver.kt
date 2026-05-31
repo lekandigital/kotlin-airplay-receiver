@@ -19,8 +19,8 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        val prefs = context.getSharedPreferences("receiver", Context.MODE_PRIVATE)
-        val startOnBoot = prefs.getBoolean("start_on_boot", true)
+        val prefs = context.getSharedPreferences(ReceiverPreferences.PREFERENCES_NAME, Context.MODE_PRIVATE)
+        val startOnBoot = prefs.getBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)
         if (!startOnBoot && action != Intent.ACTION_MY_PACKAGE_REPLACED) {
             Log.d(TAG, "start on boot disabled; skipping")
             return

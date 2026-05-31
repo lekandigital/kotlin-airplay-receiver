@@ -1,15 +1,27 @@
 package io.carmo.airplay.receiver
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.Surface
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.ArrayDeque
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -28,9 +40,12 @@ class ReceiverRuntime(private val context: Context) {
     private var raopServer: RaopServer? = null
     private var dnsNotify: DNSNotify? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var mediaSession: MediaSession? = null
+    private val transitionHistory = ArrayDeque<StateTransition>(MAX_TRANSITION_HISTORY)
 
     @Volatile private var isSurfaceAttached = false
     @Volatile private var lastUiLaunchAttemptAtMs = 0L
+    @Volatile private var currentAudioVolume = 1.0f
 
     @Volatile var state: ReceiverState = ReceiverState.STOPPED
         private set
@@ -48,6 +63,7 @@ class ReceiverRuntime(private val context: Context) {
     private val videoSizeListeners = CopyOnWriteArrayList<(Int, Int) -> Unit>()
     private val trafficListeners = CopyOnWriteArrayList<(Int) -> Unit>()
     private val latencyListeners = CopyOnWriteArrayList<(Long) -> Unit>()
+    private val afterDisconnectListeners = CopyOnWriteArrayList<() -> Unit>()
 
     val identity: ReceiverIdentity get() = ReceiverIdentity
 
@@ -83,6 +99,8 @@ class ReceiverRuntime(private val context: Context) {
     fun removeTrafficListener(l: (Int) -> Unit) = trafficListeners.remove(l)
     fun addLatencyListener(l: (Long) -> Unit) = latencyListeners.add(l)
     fun removeLatencyListener(l: (Long) -> Unit) = latencyListeners.remove(l)
+    fun addAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.add(l)
+    fun removeAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.remove(l)
 
     @Synchronized
     fun start(videoWidth: Int, videoHeight: Int, audioVolume: Float) {
@@ -91,6 +109,7 @@ class ReceiverRuntime(private val context: Context) {
             refreshDiscovery()
             return
         }
+        currentAudioVolume = audioVolume.coerceIn(0.0f, 1.0f)
         transitionTo(ReceiverState.STARTING, "runtime start")
 
         acquireMulticastLock()
@@ -154,6 +173,8 @@ class ReceiverRuntime(private val context: Context) {
         raopServer?.stopServer()
         raopServer = null
         isSurfaceAttached = false
+        releaseMediaSession()
+        dismissVideoStartedNotification()
         releaseMulticastLock()
         setStreamStatus("Waiting")
         setDiscoveryStatus("Discovery stopped")
@@ -183,7 +204,76 @@ class ReceiverRuntime(private val context: Context) {
     }
 
     fun setAudioVolume(volume: Float) {
-        raopServer?.setAudioVolume(volume)
+        currentAudioVolume = volume.coerceIn(0.0f, 1.0f)
+        raopServer?.setAudioVolume(currentAudioVolume)
+    }
+
+    fun updateDeviceName(name: String) {
+        val sanitized = name.trim()
+        val prefs = appContext.getSharedPreferences(ReceiverPreferences.PREFERENCES_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(ReceiverPreferences.KEY_CUSTOM_DEVICE_NAME, sanitized).apply()
+        refreshDiscovery()
+    }
+
+    fun getLocalIpAddress(): String {
+        return try {
+            NetworkInterface.getNetworkInterfaces()
+                .asSequence()
+                .flatMap { it.inetAddresses.asSequence() }
+                .firstOrNull { !it.isLoopbackAddress && it is Inet4Address }
+                ?.hostAddress ?: "unknown"
+        } catch (_: Exception) {
+            "unknown"
+        }
+    }
+
+    fun dismissVideoStartedNotification() {
+        val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancel(VIDEO_START_NOTIFICATION_ID)
+    }
+
+    fun buildDiagnosticsReport(): String {
+        val currentDns = dnsNotify
+        val deviceName = currentDns?.deviceName ?: deviceDisplayName
+        val receiverId = ReceiverIdentity.receiverId(appContext)
+        val stats = raopServer?.sessionStats() ?: ReceiverSessionStats()
+        val transitions = synchronized(transitionHistory) { transitionHistory.toList() }
+        val formatter = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+        return buildString {
+            appendLine("App version: ${BuildConfig.VERSION_NAME}")
+            appendLine("Receiver ID: $receiverId")
+            appendLine("Device name: $deviceName")
+            appendLine("AirPlay name: ${airplayServiceNameFor(deviceName)}")
+            appendLine("RAOP name: ${ReceiverIdentity.raopPrefix(appContext)}$deviceName")
+            appendLine()
+            appendLine("Network: ${getLocalIpAddress()}")
+            appendLine("State: $state")
+            appendLine()
+            appendLine("Last session:")
+            appendLine("  Duration: ${formatDuration(stats.durationMs)}")
+            appendLine("  Video frames rendered: ${stats.videoFramesRendered}")
+            appendLine("  Decoder restarts: ${stats.decoderRestarts}")
+            appendLine("  Audio underruns: ${stats.audioUnderruns}")
+            appendLine("  Pre-surface packets buffered: ${stats.preSurfacePacketsBuffered}")
+            appendLine()
+            appendLine("Recent events:")
+            if (transitions.isEmpty()) {
+                appendLine("  none")
+            } else {
+                transitions.forEach { transition ->
+                    append("  ")
+                    append(formatter.format(Date(transition.timestampMs)))
+                    append("  ")
+                    append(transition.from)
+                    append(" -> ")
+                    append(transition.to)
+                    append(" (")
+                    append(transition.reason)
+                    appendLine(")")
+                }
+            }
+        }
     }
 
     fun refreshDiscovery() {
@@ -202,7 +292,7 @@ class ReceiverRuntime(private val context: Context) {
     }
 
     private fun onVideoActivity(hasActivity: Boolean) {
-        if (hasActivity && !isSurfaceAttached) {
+        if (hasActivity && !isSurfaceAttached && ReceiverPreferences.automaticVideoTakeover(appContext)) {
             bringReceiverToFront()
         }
         videoActivityListeners.forEach { it(hasActivity) }
@@ -279,6 +369,118 @@ class ReceiverRuntime(private val context: Context) {
         return flags
     }
 
+    private fun canDrawOverlays(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(appContext)
+    }
+
+    private fun postVideoStartedNotification() {
+        createVideoNotificationChannel()
+        val launchIntent = Intent(appContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            appContext,
+            VIDEO_START_REQUEST_CODE,
+            launchIntent,
+            pendingIntentFlags()
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(appContext, VIDEO_NOTIFY_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(appContext)
+        }
+
+        @Suppress("DEPRECATION")
+        val notification = builder
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(appContext.getString(R.string.app_name))
+            .setContentText(appContext.getString(R.string.notification_video_started))
+            .setContentIntent(pendingIntent)
+            .setPriority(Notification.PRIORITY_HIGH)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(VIDEO_START_NOTIFICATION_ID, notification)
+    }
+
+    private fun createVideoNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = appContext.getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            VIDEO_NOTIFY_CHANNEL_ID,
+            appContext.getString(R.string.notification_channel_video),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply { setShowBadge(false) }
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun createMediaSession() {
+        if (mediaSession != null) {
+            updateMediaSessionState(PlaybackState.STATE_PLAYING)
+            return
+        }
+        val session = MediaSession(appContext, "ReceiverAudio")
+        session.setCallback(object : MediaSession.Callback() {
+            override fun onPause() {
+                // AirPlay sender transport is authoritative; do not locally mute RAOP.
+                updateMediaSessionState(PlaybackState.STATE_PLAYING)
+            }
+
+            override fun onPlay() {
+                updateMediaSessionState(PlaybackState.STATE_PLAYING)
+            }
+
+            override fun onStop() {
+                updateMediaSessionState(PlaybackState.STATE_STOPPED)
+            }
+        })
+        mediaSession = session
+        session.isActive = true
+        updateMediaSessionState(PlaybackState.STATE_PLAYING)
+    }
+
+    private fun updateMediaSessionState(state: Int) {
+        val playbackState = PlaybackState.Builder()
+            .setState(state, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+            .setActions(
+                PlaybackState.ACTION_PLAY or
+                    PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_STOP
+            )
+            .build()
+        mediaSession?.setPlaybackState(playbackState)
+    }
+
+    private fun releaseMediaSession() {
+        mediaSession?.isActive = false
+        mediaSession?.release()
+        mediaSession = null
+    }
+
+    private fun airplayServiceNameFor(deviceName: String): String {
+        return if (deviceName.endsWith(AIRPLAY_SERVICE_SUFFIX, ignoreCase = true)) {
+            deviceName.take(MAX_SERVICE_NAME_LENGTH)
+        } else {
+            val maxBaseLength = (MAX_SERVICE_NAME_LENGTH - AIRPLAY_SERVICE_SUFFIX.length).coerceAtLeast(1)
+            "${deviceName.take(maxBaseLength).trimEnd()}$AIRPLAY_SERVICE_SUFFIX"
+        }
+    }
+
+    private fun formatDuration(durationMs: Long): String {
+        if (durationMs <= 0L) return "0s"
+        val totalSeconds = durationMs / 1000L
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        return if (minutes > 0L) {
+            "${minutes}m ${seconds}s"
+        } else {
+            "${seconds}s"
+        }
+    }
+
     private fun acquireMulticastLock() {
         val lock = multicastLock ?: run {
             val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -301,8 +503,53 @@ class ReceiverRuntime(private val context: Context) {
             return
         }
         state = newState
+        recordTransition(old, newState, reason)
         Log.d(TAG, "state: $old -> $newState ($reason)")
         stateListeners.forEach { it(newState) }
+        handleStateSideEffects(old, newState)
+    }
+
+    private fun recordTransition(old: ReceiverState, newState: ReceiverState, reason: String) {
+        synchronized(transitionHistory) {
+            if (transitionHistory.size >= MAX_TRANSITION_HISTORY) {
+                transitionHistory.removeFirst()
+            }
+            transitionHistory.addLast(StateTransition(old, newState, reason))
+        }
+    }
+
+    private fun handleStateSideEffects(old: ReceiverState, newState: ReceiverState) {
+        if (newState == ReceiverState.AUDIO_ACTIVE && old != ReceiverState.AUDIO_ACTIVE) {
+            createMediaSession()
+            if (ReceiverPreferences.audioOnlyDisplay(appContext) == ReceiverPreferences.AUDIO_ONLY_STATUS) {
+                bringReceiverToFront()
+            }
+        } else if (old == ReceiverState.AUDIO_ACTIVE && newState != ReceiverState.AUDIO_ACTIVE) {
+            releaseMediaSession()
+        }
+
+        if (newState == ReceiverState.VIDEO_REQUESTED) {
+            if (ReceiverPreferences.automaticVideoTakeover(appContext) && !canDrawOverlays()) {
+                postVideoStartedNotification()
+            }
+        }
+
+        if (newState in setOf(
+                ReceiverState.IDLE_ADVERTISING,
+                ReceiverState.STOPPING_SESSION,
+                ReceiverState.STOPPED,
+                ReceiverState.ERROR_RECOVERABLE
+            )
+        ) {
+            dismissVideoStartedNotification()
+        }
+
+        if (old == ReceiverState.STOPPING_SESSION && newState == ReceiverState.IDLE_ADVERTISING) {
+            val afterDisconnect = ReceiverPreferences.afterDisconnect(appContext)
+            if (afterDisconnect == ReceiverPreferences.AFTER_DISCONNECT_HOME) {
+                afterDisconnectListeners.forEach { it() }
+            }
+        }
     }
 
     private fun isValidTransition(old: ReceiverState, new: ReceiverState): Boolean {
@@ -371,5 +618,11 @@ class ReceiverRuntime(private val context: Context) {
         private const val TAG = "Receiver-Runtime"
         private const val UI_LAUNCH_THROTTLE_MS = 5_000L
         private const val VIDEO_ACTIVITY_REQUEST_CODE = 2001
+        private const val VIDEO_START_REQUEST_CODE = 2002
+        private const val VIDEO_START_NOTIFICATION_ID = 2003
+        private const val VIDEO_NOTIFY_CHANNEL_ID = "video_started"
+        private const val MAX_TRANSITION_HISTORY = 20
+        private const val MAX_SERVICE_NAME_LENGTH = 63
+        private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
     }
 }

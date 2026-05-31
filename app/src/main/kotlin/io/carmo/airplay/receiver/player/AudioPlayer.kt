@@ -17,20 +17,25 @@ import java.util.concurrent.TimeUnit
 class AudioPlayer(
     context: Context,
     initialVolume: Float = DEFAULT_VOLUME,
-    private val onLatencySample: (Long) -> Unit = {}
+    private val onLatencySample: (Long) -> Unit = {},
+    private val onAudioUnderrun: () -> Unit = {}
 ) : Thread("ReceiverAudioPlayer") {
 
     private val appContext = context.applicationContext
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
+    private val playbackLock = Any()
     @Volatile private var volume = initialVolume.coerceIn(MIN_VOLUME, MAX_VOLUME)
     private var track: AudioTrack? = createAudioTrack()
     private var audioFocusRequest: Any? = null
     @Volatile private var isStopped = false
     private var hasStartedPlayback = false
     private var hasAudioFocus = false
+    private var hasLoggedFirstWrite = false
     private var droppedPackets = 0L
     private var lastDropLogAtMs = 0L
     private var lastUnderrunLogAtMs = 0L
+    private var lastShortWriteLogAtMs = 0L
 
     fun addPacket(packet: PCMPacket) {
         val trimmed = trimBacklog()
@@ -49,7 +54,34 @@ class AudioPlayer(
 
     fun setVolume(volume: Float) {
         this.volume = volume.coerceIn(MIN_VOLUME, MAX_VOLUME)
-        track?.setVolume(this.volume)
+        synchronized(playbackLock) {
+            track?.setVolume(this.volume)
+        }
+    }
+
+    fun flushPlayback() {
+        drainPackets()
+        droppedPackets = 0L
+        lastDropLogAtMs = 0L
+        lastUnderrunLogAtMs = 0L
+        synchronized(playbackLock) {
+            track?.let { audioTrack ->
+                try {
+                    if (audioTrack.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        audioTrack.pause()
+                    }
+                } catch (_: Exception) {
+                }
+                try {
+                    audioTrack.flush()
+                } catch (_: Exception) {
+                }
+                audioTrack.setVolume(volume)
+            }
+            hasStartedPlayback = false
+            hasLoggedFirstWrite = false
+        }
+        Log.i(TAG, "AudioTrack flushed")
     }
 
     override fun run() {
@@ -68,7 +100,7 @@ class AudioPlayer(
                     continue
                 }
                 if (!hasStartedPlayback && !hasAudioFocus) {
-                    hasAudioFocus = requestAudioFocus(appContext)
+                    hasAudioFocus = requestAudioFocus()
                     if (!hasAudioFocus) {
                         Log.w(TAG, "audio focus was not granted")
                     }
@@ -80,35 +112,36 @@ class AudioPlayer(
                 }
             }
         }
-        abandonAudioFocus(appContext)
+        abandonAudioFocus()
     }
 
     fun stopPlay() {
         isStopped = true
         interrupt()
         drainPackets()
-        track?.run {
-            try {
-                if (playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    stop()
+        synchronized(playbackLock) {
+            track?.run {
+                try {
+                    if (playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        stop()
+                    }
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {
+                try {
+                    flush()
+                } catch (_: Exception) {
+                }
+                try {
+                    release()
+                } catch (_: Exception) {
+                }
             }
-            try {
-                flush()
-            } catch (_: Exception) {
-            }
-            try {
-                release()
-            } catch (_: Exception) {
-            }
+            track = null
         }
-        track = null
-        abandonAudioFocus(appContext)
+        abandonAudioFocus()
     }
 
-    private fun requestAudioFocus(context: Context): Boolean {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private fun requestAudioFocus(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
@@ -135,8 +168,7 @@ class AudioPlayer(
         }
     }
 
-    private fun abandonAudioFocus(context: Context) {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private fun abandonAudioFocus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             (audioFocusRequest as? AudioFocusRequest)?.let {
                 audioManager.abandonAudioFocusRequest(it)
@@ -153,21 +185,43 @@ class AudioPlayer(
         try {
             packet.data.position(0)
             packet.data.limit(packet.size)
-            track?.setVolume(volume)
-            if (!hasStartedPlayback) {
-                track?.play()
-                hasStartedPlayback = true
+            val written = synchronized(playbackLock) {
+                val audioTrack = track ?: return
+                audioTrack.setVolume(volume)
+                if (!hasStartedPlayback) {
+                    audioTrack.play()
+                    hasStartedPlayback = true
+                }
+                audioTrack.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING)
             }
-            val written = track?.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING) ?: 0
             if (written < 0) {
                 Log.w(TAG, "AudioTrack write failed with code $written")
             } else if (written != packet.size) {
-                Log.w(TAG, "short AudioTrack write: wrote $written of ${packet.size} bytes")
+                handleShortWrite(written, packet.size)
             } else {
+                if (!hasLoggedFirstWrite) {
+                    hasLoggedFirstWrite = true
+                    Log.i(TAG, "first audio packet written: size=$written, volume=$volume, queued=${packets.size}")
+                }
                 onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
         } finally {
             packet.release()
+        }
+    }
+
+    private fun handleShortWrite(written: Int, expected: Int) {
+        if (written == 0) {
+            synchronized(playbackLock) {
+                if (track?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                    hasStartedPlayback = false
+                }
+            }
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastShortWriteLogAtMs >= AUDIO_LOG_INTERVAL_MS) {
+            lastShortWriteLogAtMs = now
+            Log.w(TAG, "short AudioTrack write: wrote $written of $expected bytes")
         }
     }
 
@@ -247,6 +301,7 @@ class AudioPlayer(
     }
 
     private fun logUnderrun() {
+        onAudioUnderrun()
         val now = SystemClock.elapsedRealtime()
         if (now - lastUnderrunLogAtMs >= AUDIO_LOG_INTERVAL_MS) {
             lastUnderrunLogAtMs = now
@@ -259,11 +314,11 @@ class AudioPlayer(
         private const val DEFAULT_VOLUME = 1.0f
         private const val MIN_VOLUME = 0.0f
         private const val MAX_VOLUME = 1.0f
-        private const val MAX_BUFFERED_PACKETS = 64
-        private const val MAX_QUEUED_PACKETS = 32
+        private const val MAX_BUFFERED_PACKETS = 128
+        private const val MAX_QUEUED_PACKETS = 96
         private const val PREBUFFER_PACKETS = 8
         private const val PREBUFFER_WAIT_MS = 10L
-        private const val AUDIO_BUFFER_MULTIPLIER = 2
+        private const val AUDIO_BUFFER_MULTIPLIER = 3
         private const val AUDIO_LOG_INTERVAL_MS = 5_000L
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO

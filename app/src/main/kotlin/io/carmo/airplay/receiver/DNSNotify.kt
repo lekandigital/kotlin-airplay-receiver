@@ -17,8 +17,8 @@ class DNSNotify(
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private var airplayRegister: NsdRegister? = null
     private var raopRegister: NsdRegister? = null
-    val deviceName: String = resolveDeviceName(context)
-    private val macAddress: String = ReceiverIdentity.receiverId(context)
+    val deviceName: String get() = resolveDeviceName(context)
+    private val macAddress: String get() = ReceiverIdentity.receiverId(context)
     private var airplayStatus: String = "AirPlay idle"
     private var raopStatus: String = "RAOP idle"
 
@@ -64,7 +64,9 @@ class DNSNotify(
             "vn" to "65537",
             "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
             "ch" to "2",
-            "cn" to "0,1,2,3",
+            // The native RAOP path decodes raw AAC-ELD. Advertising ALAC/PCM/AAC
+            // lets audio-only senders pick a codec this receiver cannot decode.
+            "cn" to "3",
             "md" to "0,1,2",
             "sr" to "44100",
             "ss" to "16"
@@ -236,6 +238,11 @@ class DNSNotify(
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
 
         private fun resolveDeviceName(context: Context): String {
+            val customName = ReceiverPreferences.customDeviceName(context)
+            if (customName.isUsableName()) {
+                return customName!!.sanitizeServiceName()
+            }
+
             val configuredName = Settings.Global.getString(context.contentResolver, "device_name")
             if (configuredName.isUsableName()) {
                 return configuredName.sanitizeServiceName()

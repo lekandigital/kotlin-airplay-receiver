@@ -37,11 +37,14 @@ class RaopServer(
     @Volatile private var serverId: Long = 0
     @Volatile private var lastMediaPacketAtMs = 0L
     @Volatile private var lastVideoPacketAtMs = 0L
+    @Volatile private var sessionStartedAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
-    @Volatile private var audioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+    @Volatile private var fallbackAudioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+    @Volatile private var audioVolume = fallbackAudioVolume
     @Volatile private var hasConnection = false
     @Volatile private var hasStartedVideo = false
+    @Volatile private var hasSessionVolume = false
     @Volatile private var currentState = ReceiverState.IDLE_ADVERTISING
 
     /**
@@ -56,11 +59,11 @@ class RaopServer(
     @Volatile private var lastNoSurfaceVideoLogAtMs = 0L
     @Volatile private var lastRenderedFrameCountAtMs = 0L
     @Volatile private var renderedFrameCount = 0
+    @Volatile private var decoderRestartCount = 0
+    @Volatile private var audioUnderrunCount = 0
+    @Volatile private var maxPreSurfacePacketsBuffered = 0
+    @Volatile private var lastSessionStats = ReceiverSessionStats()
     private var renderWatchdogFrameCount = 0
-
-    init {
-        ensureAudioPlayer()
-    }
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
@@ -121,6 +124,10 @@ class RaopServer(
         markMediaTraffic()
         if (firstAudioBytesAtMs == 0L) {
             firstAudioBytesAtMs = SystemClock.elapsedRealtime()
+            if (!hasSessionVolume) {
+                audioVolume = fallbackAudioVolume
+                audioPlayer?.setVolume(audioVolume)
+            }
             onStreamStatusChanged("Audio bytes received")
             if (firstVideoBytesAtMs == 0L) {
                 emitState(ReceiverState.AUDIO_ACTIVE)
@@ -135,12 +142,7 @@ class RaopServer(
             pts = pts,
             receivedAtMs = SystemClock.elapsedRealtime()
         )
-        val player = audioPlayer
-        if (player == null) {
-            packet.release()
-            return
-        }
-        player.addPacket(packet)
+        ensureAudioPlayer().addPacket(packet)
     }
 
     @Synchronized
@@ -165,7 +167,6 @@ class RaopServer(
     }
 
     fun startServer() {
-        ensureAudioPlayer()
         if (serverId == 0L) {
             serverId = start()
             if (serverId != 0L) {
@@ -176,6 +177,7 @@ class RaopServer(
 
     fun stopServer() {
         mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.removeCallbacks(startupWatchdogFinal)
         mainHandler.removeCallbacks(renderWatchdog)
         if (serverId != 0L) {
             stop(serverId)
@@ -200,13 +202,25 @@ class RaopServer(
     }
 
     fun setAudioVolume(volume: Float) {
-        audioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+        fallbackAudioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
+        if (!hasSessionVolume) {
+            audioVolume = fallbackAudioVolume
+        }
         audioPlayer?.setVolume(audioVolume)
+    }
+
+    fun sessionStats(): ReceiverSessionStats {
+        return if (sessionStartedAtMs != 0L || hasConnection) {
+            currentSessionStats()
+        } else {
+            lastSessionStats
+        }
     }
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
     fun onSetAudioVolume(volumeDb: Float) {
+        hasSessionVolume = true
         audioVolume = raopVolumeToLinear(volumeDb)
         audioPlayer?.setVolume(audioVolume)
         Log.i(TAG, "RAOP volume changed: db=$volumeDb, linear=$audioVolume")
@@ -216,9 +230,7 @@ class RaopServer(
     @SuppressLint("AnnotateVersionCheck")
     fun onAudioFlush() {
         Log.i(TAG, "RAOP audio flush requested")
-        audioPlayer?.stopPlay()
-        audioPlayer = null
-        ensureAudioPlayer()
+        audioPlayer?.flushPlayback()
     }
 
     @Suppress("unused")
@@ -248,41 +260,57 @@ class RaopServer(
 
     private fun markMediaTraffic() {
         lastMediaPacketAtMs = SystemClock.elapsedRealtime()
+        if (sessionStartedAtMs == 0L) {
+            sessionStartedAtMs = lastMediaPacketAtMs
+        }
         if (!hasConnection) {
             hasConnection = true
         }
     }
 
-    private fun ensureAudioPlayer() {
-        if (audioPlayer == null) {
-            audioPlayer = AudioPlayer(context, audioVolume, onLatencySample).also { it.start() }
-        } else {
-            audioPlayer?.setVolume(audioVolume)
+    @Synchronized
+    private fun ensureAudioPlayer(): AudioPlayer {
+        val existingPlayer = audioPlayer
+        if (existingPlayer != null) {
+            existingPlayer.setVolume(audioVolume)
+            return existingPlayer
         }
+        return AudioPlayer(context, audioVolume, onLatencySample, ::handleAudioUnderrun)
+            .also {
+                audioPlayer = it
+                it.start()
+            }
     }
 
     private fun handleStreamStopped() {
         emitState(ReceiverState.STOPPING_SESSION)
         onStreamStatusChanged("Waiting")
+        lastSessionStats = currentSessionStats()
         stopVideoPlayer()
         audioPlayer?.stopPlay()
         audioPlayer = null
         resetSessionCounters()
         clearPreSurfaceBuffer()
-        ensureAudioPlayer()
         emitState(ReceiverState.IDLE_ADVERTISING)
     }
 
     private fun resetSessionCounters() {
         mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.removeCallbacks(startupWatchdogFinal)
         mainHandler.removeCallbacks(renderWatchdog)
         lastMediaPacketAtMs = 0L
         lastVideoPacketAtMs = 0L
+        sessionStartedAtMs = 0L
         lastRenderedFrameCountAtMs = 0L
         renderedFrameCount = 0
+        decoderRestartCount = 0
+        audioUnderrunCount = 0
+        maxPreSurfacePacketsBuffered = 0
         renderWatchdogFrameCount = 0
         hasConnection = false
         hasStartedVideo = false
+        hasSessionVolume = false
+        audioVolume = fallbackAudioVolume
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
         lastVideoStatusAtMs = 0L
@@ -299,6 +327,7 @@ class RaopServer(
                 preSurfaceBuffer.removeFirst().release()
             }
             preSurfaceBuffer.addLast(packet)
+            maxPreSurfacePacketsBuffered = maxOf(maxPreSurfacePacketsBuffered, preSurfaceBuffer.size)
         }
     }
 
@@ -381,6 +410,7 @@ class RaopServer(
         if (!hasStartedVideo) {
             hasStartedVideo = true
             mainHandler.removeCallbacks(startupWatchdog)
+            mainHandler.removeCallbacks(startupWatchdogFinal)
             lastMediaPacketAtMs = now
             lastRenderedFrameCountAtMs = now
             onConnectionStarted()
@@ -418,6 +448,7 @@ class RaopServer(
 
     @Synchronized
     private fun restartVideoDecoderOnly() {
+        decoderRestartCount++
         stopVideoPlayer()
         hasStartedVideo = false
         lastRenderedFrameCountAtMs = 0L
@@ -442,12 +473,30 @@ class RaopServer(
         if (lastMediaPacketAtMs == 0L || trafficAgeMs > STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS) {
             return@Runnable
         }
-        Log.w(TAG, "startup watchdog: ${STARTUP_WATCHDOG_MS}ms with traffic but no rendered frame")
+        Log.w(TAG, "startup watchdog fired: ${STARTUP_WATCHDOG_MS}ms with traffic, no rendered frame")
+        onStreamStatusChanged("Decoder starting (retry)")
+        emitState(ReceiverState.VIDEO_STALLED)
+        restartVideoDecoderOnly()
+        mainHandler.postDelayed(startupWatchdogFinal, STARTUP_WATCHDOG_MS)
+    }
+
+    private val startupWatchdogFinal = Runnable {
+        if (hasStartedVideo) {
+            return@Runnable
+        }
+        Log.e(TAG, "startup watchdog final: decoder did not recover after two attempts")
+        onStreamStatusChanged("Video failed - disconnect and retry")
+        handleStreamStopped()
     }
 
     private fun scheduleStartupWatchdog() {
         mainHandler.removeCallbacks(startupWatchdog)
+        mainHandler.removeCallbacks(startupWatchdogFinal)
         mainHandler.postDelayed(startupWatchdog, STARTUP_WATCHDOG_MS)
+    }
+
+    private fun handleAudioUnderrun() {
+        audioUnderrunCount++
     }
 
     private fun markVideoActivity() {
@@ -457,6 +506,22 @@ class RaopServer(
     private fun emitState(state: ReceiverState) {
         currentState = state
         onStateChanged(state)
+    }
+
+    private fun currentSessionStats(): ReceiverSessionStats {
+        val startedAt = sessionStartedAtMs
+        val durationMs = if (startedAt == 0L) {
+            0L
+        } else {
+            (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(0L)
+        }
+        return ReceiverSessionStats(
+            durationMs = durationMs,
+            videoFramesRendered = renderedFrameCount,
+            decoderRestarts = decoderRestartCount,
+            audioUnderruns = audioUnderrunCount,
+            preSurfacePacketsBuffered = maxPreSurfacePacketsBuffered
+        )
     }
 
     private fun raopVolumeToLinear(volumeDb: Float): Float {
