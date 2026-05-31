@@ -64,9 +64,9 @@ class DNSNotify(
             "vn" to "65537",
             "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
             "ch" to "2",
-            // The native RAOP path decodes raw AAC-ELD. Advertising ALAC/PCM/AAC
-            // lets audio-only senders pick a codec this receiver cannot decode.
-            "cn" to "3",
+            // ALAC is required for Apple Music audio-only; AAC-ELD remains
+            // available for clients that negotiate it explicitly.
+            "cn" to "1,3",
             "md" to "0,1,2",
             "sr" to "44100",
             "ss" to "16"

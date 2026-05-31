@@ -13,6 +13,7 @@
  */
 
 #include "plist/plist/plist.h"
+#include "raop_audio.h"
 #include <ctype.h>
 #include <stdlib.h>
 /* This file should be only included from raop.c as it defines static handler
@@ -20,10 +21,6 @@
 
 typedef void (*raop_handler_t)(raop_conn_t *, http_request_t *,
                                http_response_t *, char **, int *);
-
-#define RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO 0x1000000ULL
-#define RAOP_COMPRESSION_TYPE_ALAC 2ULL
-#define RAOP_COMPRESSION_TYPE_AAC_ELD 8ULL
 
 static uint64_t
 raop_handler_get_uint(plist_t dict, const char *key, int *has_value)
@@ -46,8 +43,19 @@ raop_handler_get_uint(plist_t dict, const char *key, int *has_value)
 	return value;
 }
 
+static unsigned int
+raop_handler_get_uint_or_default(plist_t dict, const char *key, unsigned int default_value)
+{
+	int has_value = 0;
+	uint64_t value = raop_handler_get_uint(dict, key, &has_value);
+	if (!has_value || value > 0xffffffffULL) {
+		return default_value;
+	}
+	return (unsigned int)value;
+}
+
 static int
-raop_handler_audio_setup_is_supported(plist_t stream_note, logger_t *logger)
+raop_handler_audio_config_from_setup(plist_t stream_note, logger_t *logger, raop_audio_config_t *config)
 {
 	int has_compression_type = 0;
 	int has_audio_format = 0;
@@ -56,31 +64,59 @@ raop_handler_audio_setup_is_supported(plist_t stream_note, logger_t *logger)
 	uint64_t audio_format = raop_handler_get_uint(stream_note, "audioFormat", &has_audio_format);
 	uint64_t samples_per_frame = raop_handler_get_uint(stream_note, "spf", &has_samples_per_frame);
 
-	if (has_compression_type && compression_type == RAOP_COMPRESSION_TYPE_ALAC) {
-		logger_log(logger, LOGGER_WARNING,
-		           "Unsupported audio SETUP: ALAC requested (ct=%llu, audioFormat=0x%llx, spf=%llu)",
-		           compression_type, audio_format, samples_per_frame);
+	if (!stream_note || !config) {
 		return 0;
+	}
+
+	if ((has_compression_type && compression_type == RAOP_COMPRESSION_TYPE_ALAC) ||
+	    (has_audio_format && audio_format == RAOP_AUDIO_FORMAT_ALAC_44100_STEREO)) {
+		*config = raop_audio_config_default_alac();
+		config->compression_type = has_compression_type ? compression_type : RAOP_COMPRESSION_TYPE_ALAC;
+		config->audio_format = has_audio_format ? audio_format : RAOP_AUDIO_FORMAT_ALAC_44100_STEREO;
+		config->frames_per_packet = has_samples_per_frame ?
+			(unsigned int)samples_per_frame : RAOP_ALAC_DEFAULT_FRAMES_PER_PACKET;
+		config->sample_rate = raop_handler_get_uint_or_default(stream_note, "sr", RAOP_ALAC_DEFAULT_SAMPLE_RATE);
+		config->bit_depth = raop_handler_get_uint_or_default(stream_note, "ss", RAOP_ALAC_DEFAULT_BIT_DEPTH);
+		config->channels = raop_handler_get_uint_or_default(stream_note, "ch", RAOP_ALAC_DEFAULT_CHANNELS);
+		if (config->sample_rate != RAOP_ALAC_DEFAULT_SAMPLE_RATE ||
+		    config->bit_depth != RAOP_ALAC_DEFAULT_BIT_DEPTH ||
+		    config->channels != RAOP_ALAC_DEFAULT_CHANNELS ||
+		    config->frames_per_packet == 0) {
+			logger_log(logger, LOGGER_WARNING,
+			           "Unsupported ALAC SETUP: ct=%llu, audioFormat=0x%llx, spf=%u, %u/%u/%u",
+			           compression_type, audio_format, config->frames_per_packet,
+			           config->sample_rate, config->bit_depth, config->channels);
+			return 0;
+		}
+		logger_log(logger, LOGGER_INFO,
+		           "SETUP ct=%llu (ALAC) accepted, audioFormat=0x%llx, spf=%u",
+		           config->compression_type, config->audio_format, config->frames_per_packet);
+		return 1;
 	}
 
 	if (has_audio_format && audio_format != RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO) {
 		logger_log(logger, LOGGER_WARNING,
-		           "Unsupported audio SETUP: audioFormat=0x%llx (expected AAC-ELD 44.1 stereo 0x%llx)",
-		           audio_format, RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO);
+		           "Unsupported audio SETUP: audioFormat=0x%llx (expected ALAC 0x%llx or AAC-ELD 0x%llx)",
+		           audio_format, RAOP_AUDIO_FORMAT_ALAC_44100_STEREO, RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO);
 		return 0;
 	}
 
 	if (has_compression_type && compression_type != RAOP_COMPRESSION_TYPE_AAC_ELD) {
 		logger_log(logger, LOGGER_WARNING,
-		           "Unsupported audio SETUP: ct=%llu (expected AAC-ELD ct=%llu)",
-		           compression_type, RAOP_COMPRESSION_TYPE_AAC_ELD);
+		           "Unsupported audio SETUP: ct=%llu (expected ALAC ct=%llu or AAC-ELD ct=%llu)",
+		           compression_type, RAOP_COMPRESSION_TYPE_ALAC, RAOP_COMPRESSION_TYPE_AAC_ELD);
 		return 0;
 	}
 
-	if (has_samples_per_frame && samples_per_frame != 480) {
+	*config = raop_audio_config_default_aac_eld();
+	config->compression_type = has_compression_type ? compression_type : RAOP_COMPRESSION_TYPE_AAC_ELD;
+	config->audio_format = has_audio_format ? audio_format : RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO;
+	config->frames_per_packet = has_samples_per_frame ?
+		(unsigned int)samples_per_frame : RAOP_AAC_ELD_FRAMES_PER_PACKET;
+	if (config->frames_per_packet != RAOP_AAC_ELD_FRAMES_PER_PACKET) {
 		logger_log(logger, LOGGER_WARNING,
-		           "Unsupported audio SETUP: spf=%llu (expected AAC-ELD spf=480)",
-		           samples_per_frame);
+		           "Unsupported audio SETUP: spf=%u (expected AAC-ELD spf=%u)",
+		           config->frames_per_packet, RAOP_AAC_ELD_FRAMES_PER_PACKET);
 		return 0;
 	}
 
@@ -97,8 +133,10 @@ raop_handler_restrict_audio_formats(plist_t root_node)
 		if (!format) {
 			continue;
 		}
-		plist_dict_set_item(format, "audioInputFormats", plist_new_uint(RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
-		plist_dict_set_item(format, "audioOutputFormats", plist_new_uint(RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
+		plist_dict_set_item(format, "audioInputFormats",
+		                    plist_new_uint(RAOP_AUDIO_FORMAT_ALAC_44100_STEREO | RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
+		plist_dict_set_item(format, "audioOutputFormats",
+		                    plist_new_uint(RAOP_AUDIO_FORMAT_ALAC_44100_STEREO | RAOP_AUDIO_FORMAT_AAC_ELD_44100_STEREO));
 	}
 }
 
@@ -589,8 +627,9 @@ raop_handler_setup(raop_conn_t *conn,
     } else if ((has_stream_type && stream_type == 96) || conn->setup >= 2) {
         logger_log(conn->raop->logger, LOGGER_DEBUG, "SETUP audio");
         unsigned short cport = 0, tport = 0, dport = 0;
+        raop_audio_config_t audio_config;
 
-        if (!stream_note || !raop_handler_audio_setup_is_supported(stream_note, conn->raop->logger)) {
+        if (!stream_note || !raop_handler_audio_config_from_setup(stream_note, conn->raop->logger, &audio_config)) {
             conn_notify_stream_status(conn, "Unsupported AirPlay audio codec");
             http_response_reset(response, "RTSP/1.0", 415, "Unsupported Media Type");
             plist_free(root_node);
@@ -604,6 +643,12 @@ raop_handler_setup(raop_conn_t *conn,
         }
 
         if (conn->raop_rtp) {
+            if (raop_rtp_configure_audio(conn->raop_rtp, &audio_config) < 0) {
+                conn_notify_stream_status(conn, "AirPlay audio decoder init failed");
+                http_response_reset(response, "RTSP/1.0", 415, "Unsupported Media Type");
+                plist_free(root_node);
+                return;
+            }
             raop_rtp_start_audio(conn->raop_rtp, use_udp, remote_cport, remote_tport, &cport, &tport, &dport);
             conn->audio_started = 1;
             conn_notify_stream_status(conn, "Audio setup ready");

@@ -183,6 +183,15 @@ raop_rtp_destroy(raop_rtp_t *raop_rtp)
     }
 }
 
+int
+raop_rtp_configure_audio(raop_rtp_t *raop_rtp, const raop_audio_config_t *config)
+{
+    if (!raop_rtp || !raop_rtp->buffer || !config) {
+        return -1;
+    }
+    return raop_buffer_configure_audio(raop_rtp->buffer, config);
+}
+
 static int
 raop_rtp_resend_callback(void *opaque, unsigned short seqnum, unsigned short count)
 {
