@@ -47,11 +47,15 @@ class ReceiverRuntime(private val context: Context) {
     private var dnsNotify: DNSNotify? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var mediaSession: MediaSession? = null
+    private val hdmiCecWakeController = HdmiCecWakeController(appContext)
+    private val sessionHistoryStore = SessionHistoryStore(appContext)
     private val transitionHistory = ArrayDeque<StateTransition>(MAX_TRANSITION_HISTORY)
 
     @Volatile private var isSurfaceAttached = false
     @Volatile private var lastUiLaunchAttemptAtMs = 0L
     @Volatile private var currentAudioVolume = 1.0f
+    @Volatile private var activeHistorySessionId: Long? = null
+    @Volatile private var activeHistorySessionType: String = "video"
 
     @Volatile var state: ReceiverState = ReceiverState.STOPPED
         private set
@@ -191,6 +195,7 @@ class ReceiverRuntime(private val context: Context) {
     @Synchronized
     fun stop() {
         if (state == ReceiverState.STOPPED) return
+        finishHistorySession()
         transitionTo(ReceiverState.STOPPED, "runtime stop")
         dnsNotify?.stop()
         dnsNotify = null
@@ -290,7 +295,21 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("  Security: ${ReceiverPreferences.securityModeSummary(appContext)}")
             appendLine("  Takeover: ${ReceiverPreferences.takeoverProtectionSummary(appContext)}")
             appendLine("  Idle dimming: ${ReceiverPreferences.idleDimSummary(appContext)}")
+            appendLine("  Idle theme: ${ReceiverPreferences.idleThemeSummary(appContext)}")
+            appendLine("  App theme: ${ReceiverPreferences.appThemeSummary(appContext)}")
+            appendLine("  Background discovery: ${ReceiverPreferences.backgroundDiscoverySummary(appContext)}")
+            appendLine("  Room presets: ${RoomPresetStore.presets(appContext).size}/${RoomPresetStore.MAX_PRESETS}")
+            appendLine("  Active preset: ${RoomPresetStore.activePreset(appContext)?.name ?: "none"}")
             appendLine("  Verbose logging: ${if (ReceiverPreferences.verboseLogging(appContext)) "on" else "off"}")
+            appendLine()
+            val cec = hdmiCecWakeController.status()
+            appendLine("CEC wake:")
+            appendLine("  Enabled: ${cec.enabled}")
+            appendLine("  HDMI control available: ${cec.hdmiControlAvailable}")
+            appendLine("  Last result: ${cec.lastResult}")
+            if (cec.lastAttemptAtMs > 0L) {
+                appendLine("  Last attempt: ${formatter.format(Date(cec.lastAttemptAtMs))}")
+            }
             appendLine()
             appendLine("Playback:")
             appendLine("  Detected frame rate: ${"%.1f".format(Locale.US, currentFrameRate)}fps")
@@ -305,6 +324,11 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("  Audio underruns: ${stats.audioUnderruns}")
             appendLine("  Pre-surface packets buffered: ${stats.preSurfacePacketsBuffered}")
             appendLine("  Disconnect reason: ${stats.lastDisconnectReason ?: "n/a"}")
+            appendLine()
+            appendLine("Session History:")
+            appendLine("  Enabled: ${ReceiverPreferences.sessionHistoryEnabled(appContext)}")
+            appendLine("  Hide sender names: ${ReceiverPreferences.hideSenderNamesInHistory(appContext)}")
+            sessionHistoryStore.diagnosticsSummary().lineSequence().forEach { appendLine(it) }
             appendLine()
             appendLine("Suggestions:")
             appendLine("  ${diagnosticSuggestion(stats)}")
@@ -340,6 +364,7 @@ class ReceiverRuntime(private val context: Context) {
 
     private fun onConnectionStarted() {
         mainHandler.post {
+            hdmiCecWakeController.wakeForIncomingConnection()
             setStreamStatus("Streaming")
         }
     }
@@ -702,6 +727,11 @@ class ReceiverRuntime(private val context: Context) {
     }
 
     private fun handleStateSideEffects(old: ReceiverState, newState: ReceiverState) {
+        if (newState in ACTIVE_SESSION_STATES && old !in ACTIVE_SESSION_STATES) {
+            hdmiCecWakeController.wakeForIncomingConnection()
+            startHistorySession(newState)
+        }
+
         if (newState == ReceiverState.AUDIO_ACTIVE && old != ReceiverState.AUDIO_ACTIVE) {
             createMediaSession()
             if (ReceiverPreferences.audioOnlyDisplay(appContext) != ReceiverPreferences.AUDIO_ONLY_BACKGROUND) {
@@ -732,11 +762,30 @@ class ReceiverRuntime(private val context: Context) {
         }
 
         if (old == ReceiverState.STOPPING_SESSION && newState == ReceiverState.IDLE_ADVERTISING) {
+            finishHistorySession()
             val afterDisconnect = ReceiverPreferences.afterDisconnect(appContext)
             if (afterDisconnect == ReceiverPreferences.AFTER_DISCONNECT_HOME) {
                 afterDisconnectListeners.forEach { it() }
             }
         }
+    }
+
+    private fun startHistorySession(newState: ReceiverState) {
+        if (activeHistorySessionId != null) return
+        val type = if (newState == ReceiverState.AUDIO_ACTIVE) "audio" else "video"
+        activeHistorySessionType = type
+        activeHistorySessionId = sessionHistoryStore.startSession(
+            senderId = currentAudioMetadata.senderId,
+            senderName = currentAudioMetadata.senderName,
+            sessionType = type
+        )
+    }
+
+    private fun finishHistorySession() {
+        val id = activeHistorySessionId ?: return
+        val stats = raopServer?.sessionStats() ?: ReceiverSessionStats()
+        sessionHistoryStore.finishSession(id, stats, stats.lastDisconnectReason)
+        activeHistorySessionId = null
     }
 
     private fun isValidTransition(old: ReceiverState, new: ReceiverState): Boolean {
@@ -828,5 +877,13 @@ class ReceiverRuntime(private val context: Context) {
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
         private const val PAIRING_PLACEHOLDER_MS = 4_000L
         private val PAIRING_RANDOM = SecureRandom()
+        private val ACTIVE_SESSION_STATES = setOf(
+            ReceiverState.AUDIO_ACTIVE,
+            ReceiverState.VIDEO_REQUESTED,
+            ReceiverState.WAITING_FOR_SURFACE,
+            ReceiverState.VIDEO_STARTING,
+            ReceiverState.VIDEO_ACTIVE,
+            ReceiverState.VIDEO_STALLED
+        )
     }
 }

@@ -28,6 +28,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -237,9 +238,10 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (::readyOverlay.isInitialized && readyOverlay.visibility == View.VISIBLE) {
                 val clockEnabled = ReceiverPreferences.idleClockEnabled(this@MainActivity)
+                val idleTheme = ReceiverPreferences.idleTheme(this@MainActivity)
                 var offsetX = 0f
                 var offsetY = 0f
-                if (clockEnabled) {
+                if (clockEnabled || idleTheme == ReceiverPreferences.IDLE_THEME_MINIMAL) {
                     if (!ReceiverPreferences.reduceMotion(this@MainActivity)) {
                         val tick = (SystemClock.elapsedRealtime() / CLOCK_SHIFT_INTERVAL_MS).toInt()
                         offsetX = ((tick % 5) - 2) * CLOCK_SHIFT_PX
@@ -248,9 +250,12 @@ class MainActivity : ComponentActivity() {
                 }
                 readyUiState = readyUiState.copy(
                     clockText = clockFormatter.format(Date()),
-                    clockVisible = clockEnabled,
+                    clockVisible = clockEnabled && idleTheme != ReceiverPreferences.IDLE_THEME_MINIMAL,
                     clockOffsetX = offsetX,
-                    clockOffsetY = offsetY
+                    clockOffsetY = offsetY,
+                    idleTheme = idleTheme,
+                    appTheme = ReceiverPreferences.appTheme(this@MainActivity),
+                    weatherStatus = weatherStatusText()
                 )
                 readyOverlay.postDelayed(this, CLOCK_UPDATE_MS)
             }
@@ -371,6 +376,7 @@ class MainActivity : ComponentActivity() {
         unregisterAudioRouteCallback()
         stopIdleClock()
         cancelIdleDimming()
+        stopReceiverServiceIfBackgroundDisabled()
         super.onDestroy()
     }
 
@@ -667,7 +673,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun moveQuickSettingsSelection(delta: Int) {
-        val actions = QuickSettingAction.values()
+        val actions = availableQuickActions()
         val currentIndex = actions.indexOf(quickSettingsUiState.selectedAction).takeIf { it >= 0 } ?: 0
         val nextIndex = (currentIndex + delta + actions.size) % actions.size
         quickSettingsUiState = quickSettingsUiState.copy(selectedAction = actions[nextIndex])
@@ -677,6 +683,7 @@ class MainActivity : ComponentActivity() {
     private fun activateQuickSettingsAction() {
         when (quickSettingsUiState.selectedAction) {
             QuickSettingAction.QUALITY -> cycleQualityProfile()
+            QuickSettingAction.PRESET -> cycleRoomPreset()
             QuickSettingAction.SCREEN_FIT -> cycleScreenFit()
             QuickSettingAction.AUDIO_SYNC -> cycleAudioSync()
             QuickSettingAction.SECURITY -> cycleSecurityMode()
@@ -1010,7 +1017,10 @@ class MainActivity : ComponentActivity() {
             settingsHint = getString(R.string.settings_hint),
             settingsButtonText = getString(R.string.settings_button),
             quickButtonText = getString(R.string.quick_settings_button),
-            helpButtonText = getString(R.string.help_button)
+            helpButtonText = getString(R.string.help_button),
+            idleTheme = ReceiverPreferences.idleTheme(this),
+            appTheme = ReceiverPreferences.appTheme(this),
+            weatherStatus = weatherStatusText()
         )
         updateAudioVolumeUi()
     }
@@ -1222,6 +1232,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildQuickSettingsState(boundRuntime: ReceiverRuntime?): QuickSettingsUiState {
+        val presetSummary = if (RoomPresetStore.presets(this).isNotEmpty()) {
+            RoomPresetStore.activePreset(this)?.name ?: "No active preset"
+        } else {
+            ""
+        }
+        val selectedAction = quickSettingsUiState.selectedAction
+            .takeIf { it in availableQuickActions() }
+            ?: QuickSettingAction.QUALITY
         return QuickSettingsUiState(
             receiverName = boundRuntime?.deviceDisplayName ?: receiverDeviceName,
             quality = ReceiverPreferences.qualityProfileSummary(this),
@@ -1229,7 +1247,9 @@ class MainActivity : ComponentActivity() {
             audioSync = ReceiverPreferences.audioSyncSummary(this),
             audioRoute = currentAudioRouteSummary(),
             security = ReceiverPreferences.securityModeSummary(this),
-            selectedAction = quickSettingsUiState.selectedAction
+            preset = presetSummary,
+            appTheme = ReceiverPreferences.appTheme(this),
+            selectedAction = selectedAction
         )
     }
 
@@ -1266,8 +1286,17 @@ class MainActivity : ComponentActivity() {
                 ReceiverPreferences.audioSyncSummary(this)
             ),
             trafficVisible = ::trafficMonitor.isInitialized && trafficMonitor.visibility == View.VISIBLE,
+            appTheme = ReceiverPreferences.appTheme(this),
             selectedAction = streamOverlayUiState.selectedAction
         )
+    }
+
+    private fun availableQuickActions(): List<QuickSettingAction> {
+        return if (RoomPresetStore.presets(this).isEmpty()) {
+            QuickSettingAction.values().filterNot { it == QuickSettingAction.PRESET }
+        } else {
+            QuickSettingAction.values().toList()
+        }
     }
 
     private fun resetStreamOverlayTimer() {
@@ -1464,6 +1493,20 @@ class MainActivity : ComponentActivity() {
         updateWaitingStatus()
     }
 
+    private fun cycleRoomPreset() {
+        val preset = RoomPresetStore.cycleNext(this) ?: return
+        runtime?.let { boundRuntime ->
+            val selectedSize = ReceiverPreferences.selectedVideoSize(this)
+            videoSize = selectedSize
+            boundRuntime.setVideoMode(selectedSize.width, selectedSize.height)
+            boundRuntime.setAudioSyncMs(ReceiverPreferences.audioSyncMs(this))
+            boundRuntime.refreshDiscovery()
+            receiverDeviceName = boundRuntime.deviceDisplayName
+        }
+        Toast.makeText(this, "Loaded preset: ${preset.name}", Toast.LENGTH_SHORT).show()
+        updateWaitingStatus()
+    }
+
     private fun cycleAudioSync() {
         val values = listOf(-500, -250, -100, 0, 100, 250, 500)
         val current = ReceiverPreferences.audioSyncMs(this)
@@ -1587,6 +1630,30 @@ class MainActivity : ComponentActivity() {
                     quickSettingsUiState = buildQuickSettingsState(it)
                 }
             }
+        }
+    }
+
+    private fun weatherStatusText(): String {
+        if (ReceiverPreferences.idleTheme(this) != ReceiverPreferences.IDLE_THEME_WEATHER) {
+            return ""
+        }
+        return WeatherIdleRepository.summary(this)
+    }
+
+    private fun stopReceiverServiceIfBackgroundDisabled() {
+        if (isChangingConfigurations || ReceiverPreferences.backgroundDiscovery(this)) {
+            return
+        }
+        val activeState = runtime?.state in setOf(
+            ReceiverState.AUDIO_ACTIVE,
+            ReceiverState.VIDEO_REQUESTED,
+            ReceiverState.WAITING_FOR_SURFACE,
+            ReceiverState.VIDEO_STARTING,
+            ReceiverState.VIDEO_ACTIVE,
+            ReceiverState.VIDEO_STALLED
+        )
+        if (!activeState) {
+            stopService(Intent(this, ReceiverForegroundService::class.java))
         }
     }
 

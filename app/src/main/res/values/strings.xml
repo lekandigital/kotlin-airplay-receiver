@@ -4,6 +4,7 @@
     <string name="notification_channel_video">Video start alerts</string>
     <string name="notification_receiver_active">AirPlay receiver is active</string>
     <string name="notification_waiting">Ready to AirPlay</string>
+    <string name="notification_listening_background">Listening for AirPlay connections</string>
     <string name="notification_audio_active">Playing audio via AirPlay</string>
     <string name="notification_video_active">Streaming video via AirPlay</string>
     <string name="notification_error">Connection problem - tap to open</string>

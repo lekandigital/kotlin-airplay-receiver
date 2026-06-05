@@ -28,8 +28,14 @@ The receiver adapts to the sender orientation and preserves the source aspect ra
 - H.264 mirroring to `SurfaceView` with startup buffering, SPS/PPS replay, frame-rate hints, and stall recovery.
 - AirPlay audio playback through `AudioTrack`, including AAC/ALAC handling, metadata, cover art, MediaSession updates, and audio-only UI.
 - Quick controls for quality, screen fit, audio sync, audio route, security mode, and discovery restart.
-- Main settings for receiver behavior, security, display, audio, network help, accessibility, diagnostics, and identity reset.
-- Diagnostics with state history, network/discovery status, session stats, suggestions, clipboard copy, and file export.
+- Main settings for receiver behavior, room presets, security, appearance, display, audio, network help, accessibility, diagnostics, experimental features, and identity reset.
+- Room presets for saving up to five named snapshots of receiver name, quality, screen fit, audio sync, audio-only display, security mode, wake behavior, and visualizer preference.
+- Idle styles for Clock, Minimal, Art, Weather, and Photos, with burn-in-conscious dimming and pixel-shift behavior. Weather uses Open-Meteo with manually configured coordinates and cached summaries.
+- Visual themes for Midnight, Warm, and Light. Light mode is available for bright rooms and warns about OLED burn-in risk.
+- Optional background discovery keeps DNS-SD advertisements alive when the UI is not foregrounded, with a low-battery guard for portable Android TV devices.
+- Optional experimental HDMI-CEC wake tries Android TV HDMI control first and falls back to a wake lock. Hardware support varies by TV and input chain.
+- Privacy-conscious session history stores recent local connection/performance diagnostics with hashed sender identifiers, optional hidden names, and a 100-session cap.
+- Diagnostics with state history, network/discovery status, feature states, session history summaries, session stats, suggestions, clipboard copy, and file export.
 - Release posture for Play TV: targetSdk 34, App Bundle output, 64-bit native libraries, and 16 KB page-size linker alignment.
 
 ## Using It
@@ -41,6 +47,8 @@ The receiver adapts to the sender orientation and preserves the source aspect ra
 5. On Mac, use Control Center or Displays, then choose the TV name.
 
 The receiver returns to the ready screen after disconnect by default and remains discoverable while the foreground service is running.
+
+Background discovery is off by default. Enable it in Settings > Network when the TV should remain visible to AirPlay senders after the app UI is closed.
 
 ## Runtime Controls
 
@@ -57,6 +65,8 @@ Use the remote:
 
 The playback overlay includes Stop, Screen Fit, Audio Sync, Settings, Diagnostics, and Traffic actions.
 
+If room presets exist, Quick Settings also exposes a Preset action that cycles through the saved presets and refreshes discovery immediately.
+
 ## Quality Profiles
 
 - Auto: choose a practical display size from the TV capabilities.
@@ -68,6 +78,26 @@ The playback overlay includes Stop, Screen Fit, Audio Sync, Settings, Diagnostic
 
 Frame-rate matching uses `Surface.setFrameRate()` on API 30+ when enabled, with 60 fps as the fallback when sender cadence cannot be detected.
 
+## Appearance And Idle Screen
+
+Settings > Appearance provides Midnight, Warm, and Light visual themes. The Compose TV overlays update immediately; legacy Android list screens keep the platform dark styling.
+
+Settings > Receiver > Idle screen style provides:
+
+- Clock: the default ready screen with a pixel-shifted clock.
+- Minimal: a low-brightness ready indicator for the lowest burn-in risk.
+- Art: bundled dark gradient drawable resources with subtle overlay text.
+- Weather: cached Open-Meteo summaries when a location and coordinates are configured.
+- Photos: a local-directory preference for user-provided photos; when unset, the app falls back to the art presentation.
+
+Weather mode does not use a cloud key and does not upload telemetry. It fetches directly from Open-Meteo and caches the last summary so the idle screen has a fallback when the network is unavailable.
+
+## Room Presets
+
+Room presets store user-facing settings only. They do not include trusted or blocked device lists, receiver identity, experimental flags, or diagnostics settings.
+
+Use Settings > Room Presets to save, load, and delete presets. Loading a preset applies the settings immediately and refreshes AirPlay/RAOP discovery because the receiver name may change. Up to five presets are kept.
+
 ## Security Modes
 
 The UI exposes four security preferences:
@@ -78,6 +108,12 @@ The UI exposes four security preferences:
 - Open - no pairing required.
 
 Important: current discovery remains on the compatible `pw=false` AirPlay path. The PIN screen is a compatibility placeholder, and native Apple PIN verification is not cryptographically enforced yet. The existing native gate can reject blocked, untrusted, or takeover senders where a sender identifier is available, but true AirPlay PIN enforcement still requires a native password-authenticated pairing implementation.
+
+Session history is stored locally in SQLite when enabled. Sender identifiers are hashed before storage, sender display names can be hidden, and only connection/performance metadata is recorded. Playback content is never logged.
+
+## Experimental Features
+
+HDMI-CEC wake is off by default under Settings > Experimental. When enabled, incoming AirPlay activity tries Android TV HDMI one-touch-play through reflection because some SDKs expose HDMI control only as a device API. If HDMI control is unavailable or fails, the app acquires a short wake lock instead. Either way, wake failure never rejects the AirPlay connection.
 
 ## Known Limits
 

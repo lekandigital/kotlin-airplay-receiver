@@ -43,7 +43,10 @@ data class ReadyUiState(
     val clockText: String = "",
     val clockVisible: Boolean = false,
     val clockOffsetX: Float = 0f,
-    val clockOffsetY: Float = 0f
+    val clockOffsetY: Float = 0f,
+    val idleTheme: String = ReceiverPreferences.IDLE_THEME_CLOCK,
+    val appTheme: String = ReceiverPreferences.APP_THEME_MIDNIGHT,
+    val weatherStatus: String = ""
 )
 
 enum class ReadyAction {
@@ -56,34 +59,43 @@ enum class ReadyAction {
 fun ReadyOverlay(
     state: ReadyUiState
 ) {
+    val colors = AppVisualTheme.colors(state.appTheme)
+    val minimal = state.idleTheme == ReceiverPreferences.IDLE_THEME_MINIMAL
+    val themeBackground = when (state.idleTheme) {
+        ReceiverPreferences.IDLE_THEME_ART -> colors.background.copy(alpha = 0.96f)
+        ReceiverPreferences.IDLE_THEME_PHOTOS -> Color(0xF0000000)
+        ReceiverPreferences.IDLE_THEME_WEATHER -> colors.background.copy(alpha = 0.98f)
+        else -> colors.background
+    }
     MaterialTheme {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(themeBackground)
                 .padding(horizontal = 56.dp, vertical = 44.dp),
             contentAlignment = Alignment.Center
         ) {
             Surface(
-                color = Color(0xF0061322),
+                color = if (minimal) Color.Transparent else colors.surface,
                 shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, Color(0x40FFFFFF)),
-                modifier = Modifier.widthIn(min = 520.dp, max = 920.dp)
+                border = BorderStroke(1.dp, if (minimal) Color.Transparent else colors.primary.copy(alpha = 0.25f)),
+                modifier = Modifier.widthIn(min = if (minimal) 240.dp else 520.dp, max = 920.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(
                         start = 34.dp,
-                        top = 28.dp,
+                        top = if (minimal) 18.dp else 28.dp,
                         end = 34.dp,
-                        bottom = 28.dp
+                        bottom = if (minimal) 18.dp else 28.dp
                     ),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     if (state.clockVisible) {
                         Text(
                             text = state.clockText,
-                            color = Color.White,
+                            color = colors.onSurface,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 48.sp,
+                            fontSize = if (minimal) 24.sp else 48.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.graphicsLayer {
                                 translationX = state.clockOffsetX
@@ -94,84 +106,101 @@ fun ReadyOverlay(
                     }
 
                     Text(
-                        text = state.title,
-                        color = Color.White,
-                        fontSize = 34.sp,
+                        text = if (minimal) "Ready" else state.title,
+                        color = colors.onSurface,
+                        fontSize = if (minimal) 18.sp else 34.sp,
                         fontWeight = FontWeight.Light,
                         textAlign = TextAlign.Center
                     )
 
                     Text(
                         text = state.deviceName,
-                        color = Color(0xCCFFFFFF),
-                        fontSize = 24.sp,
+                        color = colors.mutedText,
+                        fontSize = if (minimal) 14.sp else 24.sp,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
-                            .padding(top = 12.dp)
+                            .padding(top = if (minimal) 6.dp else 12.dp)
                             .widthIn(max = 760.dp)
                     )
 
                     Text(
                         text = state.status,
-                        color = Color(0xAAFFFFFF),
-                        fontSize = 18.sp,
+                        color = colors.subtleText,
+                        fontSize = if (minimal) 13.sp else 18.sp,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(top = 10.dp)
                     )
 
-                    Text(
-                        text = state.connectionHint,
-                        color = Color(0x88FFFFFF),
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .padding(top = 6.dp)
-                            .widthIn(max = 760.dp)
-                    )
+                    if (!minimal) {
+                        Text(
+                            text = state.connectionHint,
+                            color = colors.subtleText,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .padding(top = 6.dp)
+                                .widthIn(max = 760.dp)
+                        )
+                    }
 
-                    if (state.qualitySummary.isNotBlank()) {
+                    if (state.qualitySummary.isNotBlank() && !minimal) {
                         Text(
                             text = state.qualitySummary,
-                            color = Color(0x88FFFFFF),
+                            color = colors.subtleText,
                             fontSize = 16.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
 
-                    if (state.securitySummary.isNotBlank()) {
+                    if (state.weatherStatus.isNotBlank() && !minimal) {
                         Text(
-                            text = state.securitySummary,
-                            color = Color(0x66FFFFFF),
+                            text = state.weatherStatus,
+                            color = colors.subtleText,
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(top = 6.dp)
                         )
                     }
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        modifier = Modifier.padding(top = 22.dp)
-                    ) {
-                        ReadyActionButton(
-                            text = state.settingsButtonText,
-                            selected = state.selectedAction == ReadyAction.SETTINGS
-                        )
-                        ReadyActionButton(
-                            text = state.quickButtonText,
-                            selected = state.selectedAction == ReadyAction.QUICK
-                        )
-                        ReadyActionButton(
-                            text = state.helpButtonText,
-                            selected = state.selectedAction == ReadyAction.HELP
+                    if (state.securitySummary.isNotBlank() && !minimal) {
+                        Text(
+                            text = state.securitySummary,
+                            color = colors.subtleText.copy(alpha = 0.75f),
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 6.dp)
                         )
                     }
 
-                    if (state.settingsHint.isNotBlank()) {
+                    if (!minimal) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            modifier = Modifier.padding(top = 22.dp)
+                        ) {
+                            ReadyActionButton(
+                                text = state.settingsButtonText,
+                                selected = state.selectedAction == ReadyAction.SETTINGS,
+                                colors = colors
+                            )
+                            ReadyActionButton(
+                                text = state.quickButtonText,
+                                selected = state.selectedAction == ReadyAction.QUICK,
+                                colors = colors
+                            )
+                            ReadyActionButton(
+                                text = state.helpButtonText,
+                                selected = state.selectedAction == ReadyAction.HELP,
+                                colors = colors
+                            )
+                        }
+                    }
+
+                    if (state.settingsHint.isNotBlank() && !minimal) {
                         Text(
                             text = state.settingsHint,
-                            color = Color(0x66FFFFFF),
+                            color = colors.subtleText.copy(alpha = 0.75f),
                             fontSize = 14.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(top = 16.dp)
@@ -187,6 +216,7 @@ fun ReadyOverlay(
 private fun ReadyActionButton(
     text: String,
     selected: Boolean,
+    colors: AppThemeColors,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -194,23 +224,21 @@ private fun ReadyActionButton(
             .width(132.dp)
             .height(52.dp)
             .background(
-                color = if (selected) Color(0xFF64717E) else Color(0xFF46505A),
+                color = if (selected) colors.selectedButton else colors.button,
                 shape = RoundedCornerShape(5.dp)
             )
             .border(
                 width = if (selected) 3.dp else 0.dp,
-                color = if (selected) ReadyAccent else Color.Transparent,
+                color = if (selected) colors.primary else Color.Transparent,
                 shape = RoundedCornerShape(5.dp)
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            color = Color.White,
+            color = colors.onSurface,
             fontSize = 17.sp,
             fontWeight = FontWeight.SemiBold
         )
     }
 }
-
-private val ReadyAccent = Color(0xFF23D18B)

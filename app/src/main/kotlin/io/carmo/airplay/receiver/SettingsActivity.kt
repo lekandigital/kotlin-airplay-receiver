@@ -102,6 +102,7 @@ class SettingsActivity : Activity() {
                 "Clock screensaver while ready",
                 if (ReceiverPreferences.idleClockEnabled(this)) "Clock" else "Static ready"
             ),
+            SettingsRow.Item("idle_theme", "Idle screen style", "Clock, minimal, art, weather, or photos", ReceiverPreferences.idleThemeSummary(this)),
             SettingsRow.Item("idle_dim", "OLED dimming", "Dim the ready screen after idle time", ReceiverPreferences.idleDimSummary(this)),
             SettingsRow.Item("display", "Display behavior", "Screen behavior while receiving", ReceiverPreferences.wakeModeSummary(this)),
             SettingsRow.Item("after_disconnect", "After disconnect", "What the TV should show after sender disconnects", ReceiverPreferences.afterDisconnectSummary(this)),
@@ -111,8 +112,34 @@ class SettingsActivity : Activity() {
                 "Start receiver service after TV boot",
                 if (prefs.getBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)) "On" else "Off"
             ),
+            SettingsRow.Section("Room Presets"),
+            SettingsRow.Item(
+                "room_preset_save",
+                "Save current settings as preset",
+                "Stores receiver, quality, display, audio, and security settings",
+                "${RoomPresetStore.presets(this).size}/${RoomPresetStore.MAX_PRESETS}"
+            ),
+            SettingsRow.Item(
+                "room_preset_manage",
+                "Saved presets",
+                RoomPresetStore.activePreset(this)?.let { "Active: ${it.name}" } ?: "No active preset",
+                "${RoomPresetStore.presets(this).size} saved"
+            ),
             SettingsRow.Section("Security"),
             SettingsRow.Item("security_mode", "Security mode", "Saved preference; AirPlay advertises compatible open mode", ReceiverPreferences.securityModeSummary(this)),
+            SettingsRow.Item(
+                "store_history",
+                "Store session history",
+                "Keep privacy-conscious local diagnostics for recent sessions",
+                if (ReceiverPreferences.sessionHistoryEnabled(this)) "On" else "Off"
+            ),
+            SettingsRow.Item(
+                "hide_history_names",
+                "Hide sender names in history",
+                "Store hashed sender identifiers without display names",
+                if (ReceiverPreferences.hideSenderNamesInHistory(this)) "On" else "Off"
+            ),
+            SettingsRow.Item("clear_history", "Clear all session history", "Delete local session diagnostics", ""),
             SettingsRow.Item(
                 "guest_mode",
                 "Guest mode",
@@ -137,6 +164,20 @@ class SettingsActivity : Activity() {
                 "Use platform frame-rate hints when available",
                 if (ReceiverPreferences.frameRateMatching(this)) "On" else "Off"
             ),
+            SettingsRow.Section("Appearance"),
+            SettingsRow.Item("app_theme", "Theme", "Midnight, warm, or light", ReceiverPreferences.appThemeSummary(this)),
+            SettingsRow.Item(
+                "weather_location",
+                "Weather location",
+                "Used by the weather idle screen",
+                prefs.getString(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME, null) ?: "Not set"
+            ),
+            SettingsRow.Item(
+                "photos_directory",
+                "Photos directory",
+                "Local storage directory for the photos idle screen",
+                prefs.getString(ReceiverPreferences.KEY_PHOTOS_DIRECTORY, null) ?: "Not set"
+            ),
             SettingsRow.Section("Audio"),
             SettingsRow.Item("audio_sync", "Audio sync", "Applied to AirPlay PCM playback", ReceiverPreferences.audioSyncSummary(this)),
             SettingsRow.Item("audio_only", "Audio-only screen", "Apple Music and other audio-only sessions", ReceiverPreferences.audioOnlyDisplaySummary(this)),
@@ -147,6 +188,12 @@ class SettingsActivity : Activity() {
                 if (ReceiverPreferences.visualizerEnabled(this)) "On" else "Off"
             ),
             SettingsRow.Section("Network"),
+            SettingsRow.Item(
+                "background_discovery",
+                "Background discovery",
+                "Keep this TV discoverable when the app is not open",
+                ReceiverPreferences.backgroundDiscoverySummary(this)
+            ),
             SettingsRow.Item("connection_help", "Connection help", "iPhone, iPad, Mac, and network checks", ""),
             SettingsRow.Item("restart_discovery", "Restart discovery", "Re-advertise AirPlay and RAOP services", ""),
             SettingsRow.Item("restart_receiver", "Restart receiver", "Restart local AirPlay server runtime", ""),
@@ -165,6 +212,13 @@ class SettingsActivity : Activity() {
                 "Detailed native RAOP logs after receiver restart",
                 if (ReceiverPreferences.verboseLogging(this)) "On" else "Off"
             ),
+            SettingsRow.Section("Experimental"),
+            SettingsRow.Item(
+                "hdmi_cec_wake",
+                "CEC wake",
+                "Wake the TV when an AirPlay connection arrives. May not work on all TV hardware.",
+                if (ReceiverPreferences.experimentalHdmiCecWake(this)) "On" else "Off"
+            ),
             SettingsRow.Item("open_diagnostics", "Open diagnostics", "Receiver ID, state history, and session stats", ""),
             SettingsRow.Item("reset_identity", "Reset receiver identity", "Apple devices will see this as a new receiver", ""),
             SettingsRow.Section("About"),
@@ -179,8 +233,21 @@ class SettingsActivity : Activity() {
         when (row.id) {
             "name" -> showNameDialog()
             "idle_clock" -> toggleBoolean(ReceiverPreferences.KEY_IDLE_CLOCK_ENABLED, true)
+            "idle_theme" -> cycleValue(
+                ReceiverPreferences.KEY_IDLE_THEME,
+                listOf(
+                    ReceiverPreferences.IDLE_THEME_CLOCK,
+                    ReceiverPreferences.IDLE_THEME_MINIMAL,
+                    ReceiverPreferences.IDLE_THEME_ART,
+                    ReceiverPreferences.IDLE_THEME_WEATHER,
+                    ReceiverPreferences.IDLE_THEME_PHOTOS
+                ),
+                ReceiverPreferences.IDLE_THEME_CLOCK
+            )
             "idle_dim" -> cycleIdleDimming()
             "boot" -> toggleBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)
+            "room_preset_save" -> showSavePresetDialog()
+            "room_preset_manage" -> showPresetList()
             "quality" -> cycleValue(
                 ReceiverPreferences.KEY_QUALITY_PROFILE,
                 listOf(
@@ -220,6 +287,9 @@ class SettingsActivity : Activity() {
                     showNativePairingCompatibilityNotice()
                 }
             }
+            "store_history" -> toggleBoolean(ReceiverPreferences.KEY_STORE_SESSION_HISTORY, true)
+            "hide_history_names" -> toggleBoolean(ReceiverPreferences.KEY_HIDE_SENDER_NAMES_HISTORY, false)
+            "clear_history" -> confirmClearSessionHistory()
             "guest_mode" -> toggleBoolean(ReceiverPreferences.KEY_GUEST_MODE, false)
             "trusted_devices" -> showDeviceList(
                 title = "Trusted devices",
@@ -257,6 +327,22 @@ class SettingsActivity : Activity() {
                 ReceiverPreferences.AFTER_DISCONNECT_WAITING
             )
             "takeover" -> toggleTakeover()
+            "app_theme" -> {
+                cycleValue(
+                    ReceiverPreferences.KEY_APP_THEME,
+                    listOf(
+                        ReceiverPreferences.APP_THEME_MIDNIGHT,
+                        ReceiverPreferences.APP_THEME_WARM,
+                        ReceiverPreferences.APP_THEME_LIGHT
+                    ),
+                    ReceiverPreferences.APP_THEME_MIDNIGHT
+                )
+                if (ReceiverPreferences.appTheme(this) == ReceiverPreferences.APP_THEME_LIGHT) {
+                    Toast.makeText(this, "Light theme may increase OLED burn-in risk.", Toast.LENGTH_LONG).show()
+                }
+            }
+            "weather_location" -> showWeatherLocationDialog()
+            "photos_directory" -> showPhotosDirectoryDialog()
             "audio_only" -> cycleValue(
                 ReceiverPreferences.KEY_AUDIO_ONLY_DISPLAY,
                 listOf(
@@ -279,12 +365,14 @@ class SettingsActivity : Activity() {
                 }
             }
             "connection_help" -> showConnectionHelp()
+            "background_discovery" -> toggleBoolean(ReceiverPreferences.KEY_BACKGROUND_DISCOVERY, false)
             "diagnostics_level" -> cycleValue(
                 ReceiverPreferences.KEY_DIAGNOSTICS_LEVEL,
                 listOf(ReceiverPreferences.DIAGNOSTICS_OFF, ReceiverPreferences.DIAGNOSTICS_BASIC),
                 ReceiverPreferences.DIAGNOSTICS_OFF
             )
             "verbose_logging" -> toggleBoolean(ReceiverPreferences.KEY_VERBOSE_LOGGING, false)
+            "hdmi_cec_wake" -> toggleBoolean(ReceiverPreferences.KEY_EXPERIMENTAL_HDMI_CEC_WAKE, false)
             "open_diagnostics" -> startActivity(Intent(this, DiagnosticsActivity::class.java))
             "restart_discovery" -> {
                 runtime?.refreshDiscovery()
@@ -322,6 +410,149 @@ class SettingsActivity : Activity() {
             imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
         }
         dialog.show()
+    }
+
+    private fun showSavePresetDialog() {
+        if (RoomPresetStore.presets(this).size >= RoomPresetStore.MAX_PRESETS) {
+            AlertDialog.Builder(this)
+                .setTitle("Preset limit reached")
+                .setMessage("Delete a saved preset before creating another one.")
+                .setPositiveButton("Manage") { _, _ -> showPresetList() }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "Living Room"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Save room preset")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val preset = RoomPresetStore.saveCurrent(this, input.text?.toString().orEmpty())
+                if (preset == null) {
+                    Toast.makeText(this, "Could not save preset", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Saved preset: ${preset.name}", Toast.LENGTH_SHORT).show()
+                    rebuildRows()
+                }
+            }
+            .show()
+    }
+
+    private fun showPresetList() {
+        val presets = RoomPresetStore.presets(this)
+        if (presets.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Room presets")
+                .setMessage("No saved presets yet.")
+                .setPositiveButton("Done", null)
+                .show()
+            return
+        }
+        val labels = presets.map { preset ->
+            "${preset.name}\nCreated ${RoomPresetStore.formattedCreatedAt(preset)}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Room presets")
+            .setItems(labels) { _, which ->
+                showPresetActions(presets[which])
+            }
+            .setNegativeButton("Done", null)
+            .show()
+    }
+
+    private fun showPresetActions(preset: RoomPreset) {
+        AlertDialog.Builder(this)
+            .setTitle(preset.name)
+            .setItems(arrayOf("Load", "Delete")) { _, which ->
+                if (which == 0) {
+                    loadPreset(preset)
+                } else {
+                    RoomPresetStore.delete(this, preset.id)
+                    rebuildRows()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun loadPreset(preset: RoomPreset) {
+        RoomPresetStore.load(this, preset)
+        ReceiverPreferences.selectedVideoSize(this).let { runtime?.setVideoMode(it.width, it.height) }
+        runtime?.setAudioSyncMs(ReceiverPreferences.audioSyncMs(this))
+        runtime?.refreshDiscovery()
+        Toast.makeText(this, "Loaded preset: ${preset.name}", Toast.LENGTH_SHORT).show()
+        rebuildRows()
+    }
+
+    private fun confirmClearSessionHistory() {
+        AlertDialog.Builder(this)
+            .setTitle("Clear session history?")
+            .setMessage("This deletes local session diagnostics stored on this TV.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Clear") { _, _ ->
+                SessionHistoryStore(this).clear()
+                Toast.makeText(this, "Session history cleared", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun showWeatherLocationDialog() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "City or Name,lat,lon"
+            setText(ReceiverPreferences.prefs(this@SettingsActivity).getString(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME, null).orEmpty())
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Weather location")
+            .setMessage("Enter a display name, or Name,latitude,longitude for Open-Meteo weather.")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val parts = input.text?.toString().orEmpty().split(",").map { it.trim() }
+                val editor = ReceiverPreferences.prefs(this).edit()
+                if (parts.firstOrNull().isNullOrBlank()) {
+                    editor.remove(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME)
+                        .remove(ReceiverPreferences.KEY_WEATHER_LATITUDE)
+                        .remove(ReceiverPreferences.KEY_WEATHER_LONGITUDE)
+                } else {
+                    editor.putString(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME, parts[0])
+                    if (parts.size >= 3) {
+                        editor.putString(ReceiverPreferences.KEY_WEATHER_LATITUDE, parts[1])
+                        editor.putString(ReceiverPreferences.KEY_WEATHER_LONGITUDE, parts[2])
+                    }
+                }
+                editor.apply()
+                rebuildRows()
+            }
+            .show()
+    }
+
+    private fun showPhotosDirectoryDialog() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "/sdcard/Pictures/AirPlay"
+            setText(ReceiverPreferences.prefs(this@SettingsActivity).getString(ReceiverPreferences.KEY_PHOTOS_DIRECTORY, null).orEmpty())
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Photos directory")
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                val value = input.text?.toString()?.trim().orEmpty()
+                val editor = ReceiverPreferences.prefs(this).edit()
+                if (value.isBlank()) {
+                    editor.remove(ReceiverPreferences.KEY_PHOTOS_DIRECTORY)
+                } else {
+                    editor.putString(ReceiverPreferences.KEY_PHOTOS_DIRECTORY, value)
+                }
+                editor.apply()
+                rebuildRows()
+            }
+            .show()
     }
 
     private fun cycleAudioSync() {

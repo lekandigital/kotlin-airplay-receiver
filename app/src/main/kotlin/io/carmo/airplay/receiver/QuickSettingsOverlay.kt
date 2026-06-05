@@ -34,11 +34,14 @@ data class QuickSettingsUiState(
     val audioSync: String = "",
     val audioRoute: String = "",
     val security: String = "",
+    val preset: String = "",
+    val appTheme: String = ReceiverPreferences.APP_THEME_MIDNIGHT,
     val selectedAction: QuickSettingAction = QuickSettingAction.QUALITY
 )
 
 enum class QuickSettingAction {
     QUALITY,
+    PRESET,
     SCREEN_FIT,
     AUDIO_SYNC,
     SECURITY,
@@ -48,6 +51,7 @@ enum class QuickSettingAction {
 
 @Composable
 fun QuickSettingsOverlay(state: QuickSettingsUiState) {
+    val colors = AppVisualTheme.colors(state.appTheme)
     MaterialTheme {
         Box(
             modifier = Modifier
@@ -56,9 +60,9 @@ fun QuickSettingsOverlay(state: QuickSettingsUiState) {
             contentAlignment = Alignment.Center
         ) {
             Surface(
-                color = Color(0xF20A0F14),
+                color = colors.surface,
                 shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+                border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.25f)),
                 modifier = Modifier.widthIn(min = 620.dp, max = 980.dp)
             ) {
                 Column(
@@ -67,37 +71,43 @@ fun QuickSettingsOverlay(state: QuickSettingsUiState) {
                 ) {
                     Text(
                         text = state.receiverName,
-                        color = Color.White,
+                        color = colors.onSurface,
                         fontSize = 28.sp,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
                     )
                     Text(
                         text = "Quick Settings",
-                        color = Color(0xAAFFFFFF),
+                        color = colors.subtleText,
                         fontSize = 18.sp,
                         modifier = Modifier.padding(top = 4.dp),
                         textAlign = TextAlign.Center
                     )
 
                     Spacer(modifier = Modifier.height(20.dp))
-                    QuickValue("Quality", state.quality)
-                    QuickValue("Screen fit", state.screenFit)
-                    QuickValue("Audio sync", state.audioSync)
-                    QuickValue("Audio output", state.audioRoute)
-                    QuickValue("Security", state.security)
+                    QuickValue("Quality", state.quality, colors)
+                    QuickValue("Screen fit", state.screenFit, colors)
+                    QuickValue("Audio sync", state.audioSync, colors)
+                    QuickValue("Audio output", state.audioRoute, colors)
+                    QuickValue("Security", state.security, colors)
+                    if (state.preset.isNotBlank()) {
+                        QuickValue("Room preset", state.preset, colors)
+                    }
 
                     Spacer(modifier = Modifier.height(22.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        QuickButton("Quality", state.selectedAction == QuickSettingAction.QUALITY)
-                        QuickButton("Fit", state.selectedAction == QuickSettingAction.SCREEN_FIT)
-                        QuickButton("Sync", state.selectedAction == QuickSettingAction.AUDIO_SYNC)
-                        QuickButton("Security", state.selectedAction == QuickSettingAction.SECURITY, wide = true)
-                        QuickButton("Restart", state.selectedAction == QuickSettingAction.RESTART_DISCOVERY, wide = true)
-                        QuickButton("Settings", state.selectedAction == QuickSettingAction.SETTINGS, wide = true)
+                        QuickButton("Quality", state.selectedAction == QuickSettingAction.QUALITY, colors)
+                        if (state.preset.isNotBlank()) {
+                            QuickButton("Preset", state.selectedAction == QuickSettingAction.PRESET, colors)
+                        }
+                        QuickButton("Fit", state.selectedAction == QuickSettingAction.SCREEN_FIT, colors)
+                        QuickButton("Sync", state.selectedAction == QuickSettingAction.AUDIO_SYNC, colors)
+                        QuickButton("Security", state.selectedAction == QuickSettingAction.SECURITY, colors, wide = true)
+                        QuickButton("Restart", state.selectedAction == QuickSettingAction.RESTART_DISCOVERY, colors, wide = true)
+                        QuickButton("Settings", state.selectedAction == QuickSettingAction.SETTINGS, colors, wide = true)
                     }
                 }
             }
@@ -106,7 +116,7 @@ fun QuickSettingsOverlay(state: QuickSettingsUiState) {
 }
 
 @Composable
-private fun QuickValue(label: String, value: String) {
+private fun QuickValue(label: String, value: String, colors: AppThemeColors) {
     Row(
         modifier = Modifier
             .widthIn(min = 520.dp, max = 780.dp)
@@ -115,13 +125,13 @@ private fun QuickValue(label: String, value: String) {
     ) {
         Text(
             text = label,
-            color = Color(0x99FFFFFF),
+            color = colors.subtleText,
             fontSize = 17.sp,
             modifier = Modifier.width(170.dp)
         )
         Text(
             text = value,
-            color = Color.White,
+            color = colors.onSurface,
             fontSize = 17.sp,
             textAlign = TextAlign.End,
             modifier = Modifier.widthIn(max = 540.dp)
@@ -130,19 +140,24 @@ private fun QuickValue(label: String, value: String) {
 }
 
 @Composable
-private fun QuickButton(text: String, selected: Boolean, wide: Boolean = false) {
+private fun QuickButton(
+    text: String,
+    selected: Boolean,
+    colors: AppThemeColors,
+    wide: Boolean = false
+) {
     Button(
         onClick = {},
         colors = ButtonDefaults.buttonColors(
-            backgroundColor = if (selected) Color(0xFF64717E) else Color(0xFF3E4852),
-            contentColor = Color.White
+            backgroundColor = if (selected) colors.selectedButton else colors.button,
+            contentColor = colors.onSurface
         ),
         modifier = Modifier
             .width(if (wide) 118.dp else 96.dp)
             .height(50.dp)
             .border(
                 width = if (selected) 3.dp else 0.dp,
-                color = if (selected) QuickAccent else Color.Transparent,
+                color = if (selected) colors.primary else Color.Transparent,
                 shape = RoundedCornerShape(5.dp)
             )
     ) {
@@ -154,5 +169,3 @@ private fun QuickButton(text: String, selected: Boolean, wide: Boolean = false) 
         )
     }
 }
-
-private val QuickAccent = Color(0xFF23D18B)

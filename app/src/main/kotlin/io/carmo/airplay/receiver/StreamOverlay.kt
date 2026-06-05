@@ -39,6 +39,8 @@ data class StreamOverlayUiState(
     val audioRoute: String = "",
     val audioSync: String = "",
     val trafficVisible: Boolean = false,
+    val appTheme: String = ReceiverPreferences.APP_THEME_MIDNIGHT,
+    val autoAdjustment: String = "",
     val selectedAction: StreamAction = StreamAction.STOP
 )
 
@@ -55,15 +57,16 @@ enum class StreamAction {
 fun StreamOverlay(
     state: StreamOverlayUiState
 ) {
+    val colors = AppVisualTheme.colors(state.appTheme)
     MaterialTheme {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.BottomCenter
         ) {
             Surface(
-                color = Color(0xE8000000),
+                color = colors.surface,
                 shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
-                border = BorderStroke(1.dp, Color(0x24FFFFFF)),
+                border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.25f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -71,14 +74,14 @@ fun StreamOverlay(
                 ) {
                     Text(
                         text = state.receiverName,
-                        color = Color.White,
+                        color = colors.onSurface,
                         fontSize = 24.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )
                     Text(
                         text = state.status,
-                        color = Color(0xCCFFFFFF),
+                        color = colors.mutedText,
                         fontSize = 17.sp,
                         modifier = Modifier.padding(top = 4.dp),
                         maxLines = 1
@@ -91,7 +94,7 @@ fun StreamOverlay(
                             state.quality,
                             state.screenFit
                         ).filter { it.isNotBlank() }.joinToString("  |  "),
-                        color = Color(0x99FFFFFF),
+                        color = colors.subtleText,
                         fontSize = 15.sp,
                         maxLines = 1
                     )
@@ -105,11 +108,20 @@ fun StreamOverlay(
                                 stringResource(R.string.stream_overlay_traffic_hidden)
                             }
                         ).filter { it.isNotBlank() }.joinToString("  |  "),
-                        color = Color(0x88FFFFFF),
+                        color = colors.subtleText,
                         fontSize = 15.sp,
                         modifier = Modifier.padding(top = 4.dp),
                         maxLines = 1
                     )
+                    if (state.autoAdjustment.isNotBlank()) {
+                        Text(
+                            text = state.autoAdjustment,
+                            color = colors.primary,
+                            fontSize = 15.sp,
+                            modifier = Modifier.padding(top = 6.dp),
+                            maxLines = 1
+                        )
+                    }
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -120,29 +132,35 @@ fun StreamOverlay(
                     ) {
                         StreamActionButton(
                             text = stringResource(R.string.stream_action_stop),
-                            selected = state.selectedAction == StreamAction.STOP
+                            selected = state.selectedAction == StreamAction.STOP,
+                            colors = colors
                         )
                         StreamActionButton(
                             text = stringResource(R.string.stream_action_fit_short),
-                            selected = state.selectedAction == StreamAction.SCREEN_FIT
+                            selected = state.selectedAction == StreamAction.SCREEN_FIT,
+                            colors = colors
                         )
                         StreamActionButton(
                             text = stringResource(R.string.stream_action_sync_short),
-                            selected = state.selectedAction == StreamAction.AUDIO_SYNC
+                            selected = state.selectedAction == StreamAction.AUDIO_SYNC,
+                            colors = colors
                         )
                         StreamActionButton(
                             text = stringResource(R.string.settings_button),
                             selected = state.selectedAction == StreamAction.SETTINGS,
+                            colors = colors,
                             wide = true
                         )
                         StreamActionButton(
                             text = stringResource(R.string.stream_action_diagnostics),
                             selected = state.selectedAction == StreamAction.DIAGNOSTICS,
+                            colors = colors,
                             wide = true
                         )
                         StreamActionButton(
                             text = stringResource(R.string.stream_action_traffic),
                             selected = state.selectedAction == StreamAction.TRAFFIC,
+                            colors = colors,
                             wide = true
                         )
                     }
@@ -156,20 +174,21 @@ fun StreamOverlay(
 private fun StreamActionButton(
     text: String,
     selected: Boolean,
+    colors: AppThemeColors,
     wide: Boolean = false
 ) {
     Button(
         onClick = {},
         colors = ButtonDefaults.buttonColors(
-            backgroundColor = if (selected) Color(0xFF64717E) else Color(0xFF3E4852),
-            contentColor = Color.White
+            backgroundColor = if (selected) colors.selectedButton else colors.button,
+            contentColor = colors.onSurface
         ),
         modifier = Modifier
             .width(if (wide) 132.dp else 92.dp)
             .height(52.dp)
             .border(
                 width = if (selected) 3.dp else 0.dp,
-                color = if (selected) StreamAccent else Color.Transparent,
+                color = if (selected) colors.primary else Color.Transparent,
                 shape = RoundedCornerShape(5.dp)
             )
     ) {
@@ -182,5 +201,3 @@ private fun StreamActionButton(
         )
     }
 }
-
-private val StreamAccent = Color(0xFF23D18B)

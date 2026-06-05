@@ -7,7 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioManager
+import android.os.BatteryManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -47,6 +49,11 @@ class ReceiverForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
+        if (ReceiverPreferences.backgroundDiscovery(this) && batteryTooLowForBackgroundDiscovery()) {
+            ReceiverPreferences.prefs(this).edit()
+                .putBoolean(ReceiverPreferences.KEY_BACKGROUND_DISCOVERY, false)
+                .apply()
+        }
         if (runtime.state == ReceiverState.STOPPED) {
             val videoSize = ReceiverPreferences.selectedVideoSize(this)
             runtime.start(videoSize.width, videoSize.height, loadAudioVolume())
@@ -69,6 +76,9 @@ class ReceiverForegroundService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
+        if (!ReceiverPreferences.backgroundDiscovery(this) && runtime.state !in ACTIVE_SESSION_STATES) {
+            stopSelf()
+        }
     }
 
     private fun startAsForeground() {
@@ -83,7 +93,11 @@ class ReceiverForegroundService : Service() {
 
     private fun notificationTextFor(state: ReceiverState): String {
         return when (state) {
-            ReceiverState.IDLE_ADVERTISING -> getString(R.string.notification_waiting)
+            ReceiverState.IDLE_ADVERTISING -> if (ReceiverPreferences.backgroundDiscovery(this)) {
+                getString(R.string.notification_listening_background)
+            } else {
+                getString(R.string.notification_waiting)
+            }
             ReceiverState.AUDIO_ACTIVE -> getString(R.string.notification_audio_active)
             ReceiverState.VIDEO_ACTIVE -> getString(R.string.notification_video_active)
             ReceiverState.ERROR_RECOVERABLE -> getString(R.string.notification_error)
@@ -133,8 +147,28 @@ class ReceiverForegroundService : Service() {
             .coerceIn(0.0f, 1.0f)
     }
 
+    private fun batteryTooLowForBackgroundDiscovery(): Boolean {
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false
+        val status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        if (charging) return false
+        val level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+        val scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+        if (level < 0 || scale <= 0) return false
+        return level * 100 / scale < 15
+    }
+
     companion object {
         private const val CHANNEL_ID = "receiver_active"
         private const val NOTIFICATION_ID = 1001
+        private val ACTIVE_SESSION_STATES = setOf(
+            ReceiverState.AUDIO_ACTIVE,
+            ReceiverState.VIDEO_REQUESTED,
+            ReceiverState.WAITING_FOR_SURFACE,
+            ReceiverState.VIDEO_STARTING,
+            ReceiverState.VIDEO_ACTIVE,
+            ReceiverState.VIDEO_STALLED
+        )
     }
 }

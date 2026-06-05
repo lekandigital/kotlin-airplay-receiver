@@ -61,6 +61,7 @@ object ReceiverPreferences {
     const val KEY_REDUCE_MOTION = "reduce_motion"
     const val KEY_FRAME_RATE_MATCHING = "frame_rate_matching"
     const val KEY_VISUALIZER_ENABLED = "visualizer_enabled"
+    const val KEY_BACKGROUND_DISCOVERY = "background_discovery"
     const val KEY_GUEST_MODE = "guest_mode"
     const val KEY_TAKEOVER_PROTECTION = "takeover_protection"
     const val TAKEOVER_REJECT = "reject"
@@ -74,6 +75,30 @@ object ReceiverPreferences {
     const val SECURITY_TRUSTED_ONLY = "trusted_only"
     const val KEY_TRUSTED_DEVICES = "trusted_devices"
     const val KEY_BLOCKED_DEVICES = "blocked_devices"
+
+    const val KEY_ROOM_PRESETS = "room_presets"
+    const val KEY_ACTIVE_ROOM_PRESET_ID = "active_room_preset_id"
+
+    const val KEY_IDLE_THEME = "idle_theme"
+    const val IDLE_THEME_CLOCK = "clock"
+    const val IDLE_THEME_MINIMAL = "minimal"
+    const val IDLE_THEME_ART = "art"
+    const val IDLE_THEME_WEATHER = "weather"
+    const val IDLE_THEME_PHOTOS = "photos"
+    const val KEY_WEATHER_LATITUDE = "weather_latitude"
+    const val KEY_WEATHER_LONGITUDE = "weather_longitude"
+    const val KEY_WEATHER_LOCATION_NAME = "weather_location_name"
+    const val KEY_PHOTOS_DIRECTORY = "photos_directory"
+
+    const val KEY_APP_THEME = "app_theme"
+    const val APP_THEME_MIDNIGHT = "midnight"
+    const val APP_THEME_WARM = "warm"
+    const val APP_THEME_LIGHT = "light"
+
+    const val KEY_EXPERIMENTAL_HDMI_CEC_WAKE = "experimental_hdmi_cec_wake"
+
+    const val KEY_STORE_SESSION_HISTORY = "store_session_history"
+    const val KEY_HIDE_SENDER_NAMES_HISTORY = "hide_sender_names_history"
 
     data class VideoSize(
         val width: Int,
@@ -264,6 +289,14 @@ object ReceiverPreferences {
         return prefs(context).getBoolean(KEY_VISUALIZER_ENABLED, true)
     }
 
+    fun backgroundDiscovery(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_BACKGROUND_DISCOVERY, false)
+    }
+
+    fun backgroundDiscoverySummary(context: Context): String {
+        return if (backgroundDiscovery(context)) "On" else "Off"
+    }
+
     fun verboseLogging(context: Context): Boolean {
         return prefs(context).getBoolean(KEY_VERBOSE_LOGGING, false)
     }
@@ -283,6 +316,44 @@ object ReceiverPreferences {
             TAKEOVER_ALLOW -> "Allow takeover"
             else -> "Reject while active"
         }
+    }
+
+    fun idleTheme(context: Context): String {
+        return prefs(context).getString(KEY_IDLE_THEME, IDLE_THEME_CLOCK) ?: IDLE_THEME_CLOCK
+    }
+
+    fun idleThemeSummary(context: Context): String {
+        return when (idleTheme(context)) {
+            IDLE_THEME_MINIMAL -> "Minimal"
+            IDLE_THEME_ART -> "Art"
+            IDLE_THEME_WEATHER -> "Weather"
+            IDLE_THEME_PHOTOS -> "Photos"
+            else -> "Clock"
+        }
+    }
+
+    fun appTheme(context: Context): String {
+        return prefs(context).getString(KEY_APP_THEME, APP_THEME_MIDNIGHT) ?: APP_THEME_MIDNIGHT
+    }
+
+    fun appThemeSummary(context: Context): String {
+        return when (appTheme(context)) {
+            APP_THEME_WARM -> "Warm"
+            APP_THEME_LIGHT -> "Light"
+            else -> "Midnight"
+        }
+    }
+
+    fun experimentalHdmiCecWake(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_EXPERIMENTAL_HDMI_CEC_WAKE, false)
+    }
+
+    fun sessionHistoryEnabled(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_STORE_SESSION_HISTORY, true)
+    }
+
+    fun hideSenderNamesInHistory(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_HIDE_SENDER_NAMES_HISTORY, false)
     }
 
     @Suppress("DEPRECATION")
