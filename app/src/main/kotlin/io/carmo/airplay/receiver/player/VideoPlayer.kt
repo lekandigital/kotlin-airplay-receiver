@@ -18,7 +18,8 @@ class VideoPlayer(
     private val height: Int,
     private val onLatencySample: (Long) -> Unit = {},
     private val onFrameRendered: () -> Unit = {},
-    private val onOutputSizeChanged: (Int, Int) -> Unit = { _, _ -> }
+    private val onOutputSizeChanged: (Int, Int) -> Unit = { _, _ -> },
+    private val enableFrameRateHint: Boolean = false
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
@@ -110,12 +111,28 @@ class VideoPlayer(
             }
 
             codec.configure(videoFormat, surface, null, 0)
+            applyFrameRateHint()
             codec.setVideoScalingMode(chooseScalingMode(width, height, width, height))
             codec.start()
             decoder = codec
         } catch (e: Exception) {
             Log.e(TAG, "failed to initialise decoder for ${width}x${height}", e)
             releaseDecoder()
+        }
+    }
+
+    private fun applyFrameRateHint() {
+        if (!enableFrameRateHint || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+        try {
+            surface.setFrameRate(
+                VIDEO_OPERATING_RATE,
+                Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+            )
+            Log.i(TAG, "surface frame-rate hint set to ${VIDEO_OPERATING_RATE}fps")
+        } catch (e: Throwable) {
+            Log.w(TAG, "surface frame-rate hint failed", e)
         }
     }
 
@@ -341,8 +358,8 @@ class VideoPlayer(
     companion object {
         private const val TAG = "Receiver-Video"
         private const val DEBUG_FRAMES = false
-        private const val MAX_BUFFERED_FRAMES = 16
-        private const val MAX_QUEUED_FRAMES = 12
+        private const val MAX_BUFFERED_FRAMES = 96
+        private const val MAX_QUEUED_FRAMES = 72
         private const val DROP_LOG_INTERVAL_MS = 2_000L
         private const val RENDER_LOG_INTERVAL_MS = 5_000L
         private const val MIME_TYPE = "video/avc"

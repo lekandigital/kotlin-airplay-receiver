@@ -275,7 +275,13 @@ class RaopServer(
             existingPlayer.setVolume(audioVolume)
             return existingPlayer
         }
-        return AudioPlayer(context, audioVolume, onLatencySample, ::handleAudioUnderrun)
+        return AudioPlayer(
+            context,
+            audioVolume,
+            onLatencySample,
+            ::handleAudioUnderrun,
+            audioStableMode = ReceiverPreferences.qualityProfile(context) == ReceiverPreferences.QUALITY_AUDIO_STABLE
+        )
             .also {
                 audioPlayer = it
                 it.start()
@@ -285,7 +291,7 @@ class RaopServer(
     private fun handleStreamStopped() {
         emitState(ReceiverState.STOPPING_SESSION)
         onStreamStatusChanged("Waiting")
-        lastSessionStats = currentSessionStats()
+        lastSessionStats = currentSessionStats("Sender disconnected")
         stopVideoPlayer()
         audioPlayer?.stopPlay()
         audioPlayer = null
@@ -380,7 +386,9 @@ class RaopServer(
             videoHeight,
             onLatencySample,
             ::handleVideoFrameRendered,
-            onVideoSizeChanged
+            onVideoSizeChanged,
+            enableFrameRateHint = ReceiverPreferences.frameRateMatching(context) &&
+                ReceiverPreferences.qualityProfile(context) != ReceiverPreferences.QUALITY_LOW_LATENCY
         )
         videoPlayer = newPlayer
         onStreamStatusChanged("Decoder starting")
@@ -508,7 +516,7 @@ class RaopServer(
         onStateChanged(state)
     }
 
-    private fun currentSessionStats(): ReceiverSessionStats {
+    private fun currentSessionStats(disconnectReason: String? = null): ReceiverSessionStats {
         val startedAt = sessionStartedAtMs
         val durationMs = if (startedAt == 0L) {
             0L
@@ -520,7 +528,8 @@ class RaopServer(
             videoFramesRendered = renderedFrameCount,
             decoderRestarts = decoderRestartCount,
             audioUnderruns = audioUnderrunCount,
-            preSurfacePacketsBuffered = maxPreSurfacePacketsBuffered
+            preSurfacePacketsBuffered = maxPreSurfacePacketsBuffered,
+            lastDisconnectReason = disconnectReason
         )
     }
 

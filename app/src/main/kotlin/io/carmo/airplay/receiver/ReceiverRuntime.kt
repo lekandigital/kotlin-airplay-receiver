@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.session.MediaSession
+import android.media.MediaMetadata
 import android.media.session.PlaybackState
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -22,6 +23,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.ArrayDeque
+import java.security.SecureRandom
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -54,6 +56,9 @@ class ReceiverRuntime(private val context: Context) {
         private set
 
     @Volatile var streamStatus: String = "Waiting"
+        private set
+
+    @Volatile var pairingPin: String? = null
         private set
 
     private val stateListeners = CopyOnWriteArrayList<(ReceiverState) -> Unit>()
@@ -249,6 +254,15 @@ class ReceiverRuntime(private val context: Context) {
             appendLine()
             appendLine("Network: ${getLocalIpAddress()}")
             appendLine("State: $state")
+            appendLine("Discovery status:")
+            discoveryStatus.lineSequence().forEach { appendLine("  $it") }
+            appendLine()
+            appendLine("Settings:")
+            appendLine("  Quality: ${ReceiverPreferences.qualityProfileSummary(appContext)}")
+            appendLine("  Screen fit: ${ReceiverPreferences.screenFitSummary(appContext)}")
+            appendLine("  Audio sync: ${ReceiverPreferences.audioSyncSummary(appContext)}")
+            appendLine("  Security: ${ReceiverPreferences.securityModeSummary(appContext)}")
+            appendLine("  Takeover: ${ReceiverPreferences.takeoverProtectionSummary(appContext)}")
             appendLine()
             appendLine("Last session:")
             appendLine("  Duration: ${formatDuration(stats.durationMs)}")
@@ -256,6 +270,10 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("  Decoder restarts: ${stats.decoderRestarts}")
             appendLine("  Audio underruns: ${stats.audioUnderruns}")
             appendLine("  Pre-surface packets buffered: ${stats.preSurfacePacketsBuffered}")
+            appendLine("  Disconnect reason: ${stats.lastDisconnectReason ?: "n/a"}")
+            appendLine()
+            appendLine("Suggestions:")
+            appendLine("  ${diagnosticSuggestion(stats)}")
             appendLine()
             appendLine("Recent events:")
             if (transitions.isEmpty()) {
@@ -321,8 +339,35 @@ class ReceiverRuntime(private val context: Context) {
             if (newState == ReceiverState.IDLE_ADVERTISING) {
                 setStreamStatus("Waiting")
             }
+            if (shouldShowPairingPlaceholder(newState)) {
+                beginPairingPlaceholder(newState)
+                return@post
+            }
             transitionTo(newState, "raop state change")
         }
+    }
+
+    private fun shouldShowPairingPlaceholder(newState: ReceiverState): Boolean {
+        if (!ReceiverPreferences.requiresPairingPassword(appContext)) return false
+        if (state != ReceiverState.IDLE_ADVERTISING) return false
+        return newState in setOf(
+            ReceiverState.AUDIO_ACTIVE,
+            ReceiverState.VIDEO_REQUESTED,
+            ReceiverState.WAITING_FOR_SURFACE,
+            ReceiverState.VIDEO_STARTING
+        )
+    }
+
+    private fun beginPairingPlaceholder(nextState: ReceiverState) {
+        pairingPin = "%04d".format(PAIRING_RANDOM.nextInt(10_000))
+        setStreamStatus("Pairing PIN: $pairingPin")
+        transitionTo(ReceiverState.PAIRING, "pairing placeholder")
+        mainHandler.postDelayed({
+            if (state == ReceiverState.PAIRING) {
+                pairingPin = null
+                transitionTo(nextState, "pairing placeholder accepted")
+            }
+        }, PAIRING_PLACEHOLDER_MS)
     }
 
     private fun setDiscoveryStatus(status: String) {
@@ -439,7 +484,17 @@ class ReceiverRuntime(private val context: Context) {
         })
         mediaSession = session
         session.isActive = true
+        updateMediaSessionMetadata()
         updateMediaSessionState(PlaybackState.STATE_PLAYING)
+    }
+
+    private fun updateMediaSessionMetadata() {
+        val metadata = MediaMetadata.Builder()
+            .putString(MediaMetadata.METADATA_KEY_TITLE, "AirPlay Audio")
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, deviceDisplayName)
+            .putString(MediaMetadata.METADATA_KEY_ALBUM, appContext.getString(R.string.app_name))
+            .build()
+        mediaSession?.setMetadata(metadata)
     }
 
     private fun updateMediaSessionState(state: Int) {
@@ -478,6 +533,15 @@ class ReceiverRuntime(private val context: Context) {
             "${minutes}m ${seconds}s"
         } else {
             "${seconds}s"
+        }
+    }
+
+    private fun diagnosticSuggestion(stats: ReceiverSessionStats): String {
+        return when {
+            stats.decoderRestarts >= 2 -> "Repeated decoder restarts detected. Try Compatibility quality profile."
+            stats.audioUnderruns >= 3 -> "Audio underruns detected. Try Audio Stable quality profile or reduce Bluetooth latency."
+            state == ReceiverState.ERROR_RECOVERABLE -> "Receiver is recovering. Restart discovery or restart the receiver if it does not return to ready."
+            else -> "No specific suggestion."
         }
     }
 
@@ -521,7 +585,7 @@ class ReceiverRuntime(private val context: Context) {
     private fun handleStateSideEffects(old: ReceiverState, newState: ReceiverState) {
         if (newState == ReceiverState.AUDIO_ACTIVE && old != ReceiverState.AUDIO_ACTIVE) {
             createMediaSession()
-            if (ReceiverPreferences.audioOnlyDisplay(appContext) == ReceiverPreferences.AUDIO_ONLY_STATUS) {
+            if (ReceiverPreferences.audioOnlyDisplay(appContext) != ReceiverPreferences.AUDIO_ONLY_BACKGROUND) {
                 bringReceiverToFront()
             }
         } else if (old == ReceiverState.AUDIO_ACTIVE && newState != ReceiverState.AUDIO_ACTIVE) {
@@ -541,6 +605,7 @@ class ReceiverRuntime(private val context: Context) {
                 ReceiverState.ERROR_RECOVERABLE
             )
         ) {
+            pairingPin = null
             dismissVideoStartedNotification()
         }
 
@@ -555,15 +620,30 @@ class ReceiverRuntime(private val context: Context) {
     private fun isValidTransition(old: ReceiverState, new: ReceiverState): Boolean {
         if (new == ReceiverState.STOPPED || new == ReceiverState.ERROR_RECOVERABLE) return true
         return when (old) {
+            ReceiverState.FIRST_RUN -> new in setOf(
+                ReceiverState.STOPPED,
+                ReceiverState.STARTING,
+                ReceiverState.IDLE_ADVERTISING
+            )
             ReceiverState.STOPPED -> new == ReceiverState.STARTING
             ReceiverState.STARTING -> new in setOf(
                 ReceiverState.IDLE_ADVERTISING,
+                ReceiverState.PAIRING,
                 ReceiverState.AUDIO_ACTIVE,
                 ReceiverState.VIDEO_REQUESTED,
                 ReceiverState.WAITING_FOR_SURFACE,
                 ReceiverState.VIDEO_STARTING
             )
             ReceiverState.IDLE_ADVERTISING -> new in setOf(
+                ReceiverState.PAIRING,
+                ReceiverState.AUDIO_ACTIVE,
+                ReceiverState.VIDEO_REQUESTED,
+                ReceiverState.WAITING_FOR_SURFACE,
+                ReceiverState.VIDEO_STARTING,
+                ReceiverState.STOPPING_SESSION
+            )
+            ReceiverState.PAIRING -> new in setOf(
+                ReceiverState.IDLE_ADVERTISING,
                 ReceiverState.AUDIO_ACTIVE,
                 ReceiverState.VIDEO_REQUESTED,
                 ReceiverState.WAITING_FOR_SURFACE,
@@ -624,5 +704,7 @@ class ReceiverRuntime(private val context: Context) {
         private const val MAX_TRANSITION_HISTORY = 20
         private const val MAX_SERVICE_NAME_LENGTH = 63
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
+        private const val PAIRING_PLACEHOLDER_MS = 4_000L
+        private val PAIRING_RANDOM = SecureRandom()
     }
 }

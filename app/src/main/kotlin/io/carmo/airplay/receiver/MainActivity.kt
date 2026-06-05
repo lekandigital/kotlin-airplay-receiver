@@ -1,10 +1,13 @@
 package io.carmo.airplay.receiver
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.media.AudioDeviceInfo
+import android.media.AudioDeviceCallback
 import android.graphics.PixelFormat
 import android.media.AudioManager
 import android.net.Uri
@@ -17,7 +20,6 @@ import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -27,6 +29,9 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import kotlin.math.roundToInt
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
 
@@ -37,11 +42,16 @@ class MainActivity : Activity() {
     private lateinit var playbackSurface: SurfaceView
     private lateinit var waitingOverlay: View
     private lateinit var deviceNameLabel: TextView
+    private lateinit var idleClockLabel: TextView
     private lateinit var statusLabel: TextView
     private lateinit var discoveryStatusView: TextView
     private lateinit var versionLabel: TextView
+    private lateinit var settingsButton: Button
+    private lateinit var helpButton: Button
     private lateinit var audioOnlyOverlay: View
+    private lateinit var audioOnlySubtitle: TextView
     private lateinit var audioVolumeLabel: TextView
+    private lateinit var audioVisualizer: SpectrumVisualizerView
     private lateinit var audioVolumeOverlay: View
     private lateinit var audioVolumeOverlayLabel: TextView
     private lateinit var audioVolumeOverlayBar: ProgressBar
@@ -49,9 +59,15 @@ class MainActivity : Activity() {
     private lateinit var permissionButton: Button
     private lateinit var streamInfoOverlay: View
     private lateinit var streamInfoOverlayText: TextView
+    private lateinit var streamInfoStopButton: Button
+    private lateinit var streamInfoFitButton: Button
     private lateinit var streamInfoDiagnosticsButton: Button
+    private lateinit var streamInfoTrafficButton: Button
     private lateinit var trafficMonitor: TrafficMonitorView
+    private lateinit var pairingOverlay: View
+    private lateinit var pairingPinLabel: TextView
     private lateinit var audioManager: AudioManager
+    private var audioDeviceCallback: AudioDeviceCallback? = null
 
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var wakeNudgeLock: PowerManager.WakeLock? = null
@@ -60,13 +76,7 @@ class MainActivity : Activity() {
     private var audioVolume = DEFAULT_AUDIO_VOLUME
     @Volatile private var lastWakeNudgeAtMs = 0L
     @Volatile private var wakeNudgePending = false
-    private var volumeGestureStartY = 0f
-    private var volumeGestureStartLevel = DEFAULT_AUDIO_VOLUME
-    private var isVolumeGestureCandidate = false
-    private var isAdjustingVolume = false
-    private var trafficGestureStartX = 0f
-    private var trafficGestureStartY = 0f
-    private var isTrafficGestureCandidate = false
+    private var hasShownFirstRunDialog = false
     private var isStreaming = false
     private var streamVideoWidth = 0
     private var streamVideoHeight = 0
@@ -89,6 +99,7 @@ class MainActivity : Activity() {
             attachSurfaceIfReady(boundRuntime)
             handleReceiverState(boundRuntime.state)
             checkOverlayPermission()
+            maybeShowFirstRun()
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -147,7 +158,12 @@ class MainActivity : Activity() {
     }
 
     private val trafficListener: (Int) -> Unit = { byteCount ->
-        runOnUiThread { trafficMonitor.recordTraffic(byteCount) }
+        runOnUiThread {
+            trafficMonitor.recordTraffic(byteCount)
+            if (::audioVisualizer.isInitialized) {
+                audioVisualizer.recordSample(byteCount)
+            }
+        }
     }
 
     private val latencyListener: (Long) -> Unit = { latencyMs ->
@@ -166,6 +182,28 @@ class MainActivity : Activity() {
         streamInfoOverlay.visibility = View.GONE
     }
 
+    private val clockFormatter = SimpleDateFormat("h:mm", Locale.US)
+    private val updateIdleClock = object : Runnable {
+        override fun run() {
+            if (::idleClockLabel.isInitialized && waitingOverlay.visibility == View.VISIBLE) {
+                val clockEnabled = ReceiverPreferences.idleClockEnabled(this@MainActivity)
+                idleClockLabel.visibility = if (clockEnabled) View.VISIBLE else View.GONE
+                if (clockEnabled) {
+                    idleClockLabel.text = clockFormatter.format(Date())
+                    if (!ReceiverPreferences.reduceMotion(this@MainActivity)) {
+                        val tick = (SystemClock.elapsedRealtime() / CLOCK_SHIFT_INTERVAL_MS).toInt()
+                        idleClockLabel.translationX = ((tick % 5) - 2) * CLOCK_SHIFT_PX
+                        idleClockLabel.translationY = (((tick / 5) % 5) - 2) * CLOCK_SHIFT_PX
+                    } else {
+                        idleClockLabel.translationX = 0f
+                        idleClockLabel.translationY = 0f
+                    }
+                }
+                idleClockLabel.postDelayed(this, CLOCK_UPDATE_MS)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -173,12 +211,17 @@ class MainActivity : Activity() {
 
         playbackSurface = findViewById(R.id.surface)
         waitingOverlay = findViewById(R.id.waiting_overlay)
+        idleClockLabel = findViewById(R.id.idle_clock_label)
         deviceNameLabel = findViewById(R.id.device_name_label)
         statusLabel = findViewById(R.id.status_label)
         discoveryStatusView = findViewById(R.id.discovery_status)
         versionLabel = findViewById(R.id.version_label)
+        settingsButton = findViewById(R.id.settings_button)
+        helpButton = findViewById(R.id.help_button)
         audioOnlyOverlay = findViewById(R.id.audio_only_overlay)
+        audioOnlySubtitle = findViewById(R.id.audio_only_subtitle)
         audioVolumeLabel = findViewById(R.id.audio_volume_label)
+        audioVisualizer = findViewById(R.id.audio_visualizer)
         audioVolumeOverlay = findViewById(R.id.audio_volume_overlay)
         audioVolumeOverlayLabel = findViewById(R.id.audio_volume_overlay_label)
         audioVolumeOverlayBar = findViewById(R.id.audio_volume_overlay_bar)
@@ -186,8 +229,13 @@ class MainActivity : Activity() {
         permissionButton = findViewById(R.id.permission_button)
         streamInfoOverlay = findViewById(R.id.stream_info_overlay)
         streamInfoOverlayText = findViewById(R.id.stream_info_text)
+        streamInfoStopButton = findViewById(R.id.stream_info_stop_button)
+        streamInfoFitButton = findViewById(R.id.stream_info_fit_button)
         streamInfoDiagnosticsButton = findViewById(R.id.stream_info_diagnostics_button)
+        streamInfoTrafficButton = findViewById(R.id.stream_info_traffic_button)
         trafficMonitor = findViewById(R.id.traffic_monitor)
+        pairingOverlay = findViewById(R.id.pairing_overlay)
+        pairingPinLabel = findViewById(R.id.pairing_pin_label)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         configurePlaybackSurface(playbackSurface)
@@ -212,6 +260,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        registerAudioRouteCallback()
         videoSize = ReceiverPreferences.selectedVideoSize(this)
         wakeMode = ReceiverPreferences.wakeMode(this)
         audioVolume = loadAudioVolume()
@@ -229,6 +278,11 @@ class MainActivity : Activity() {
         if (::waitingOverlay.isInitialized && !isStreaming) {
             updateWaitingStatus()
         }
+    }
+
+    override fun onPause() {
+        unregisterAudioRouteCallback()
+        super.onPause()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -252,15 +306,9 @@ class MainActivity : Activity() {
         }
         allowScreenSaver()
         releaseWakeNudgeLock()
+        unregisterAudioRouteCallback()
+        stopIdleClock()
         super.onDestroy()
-    }
-
-    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        handleTrafficMonitorGesture(event)
-        if (handleVolumeGesture(event)) {
-            return true
-        }
-        return super.dispatchTouchEvent(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -276,18 +324,28 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER -> {
                 if (!isStreaming) {
+                    if (currentFocus != null && currentFocus != waitingOverlay) {
+                        return super.onKeyDown(keyCode, event)
+                    }
                     openSettings()
                 } else {
+                    if (streamInfoOverlay.visibility == View.VISIBLE && currentFocus is Button) {
+                        return super.onKeyDown(keyCode, event)
+                    }
                     showStreamInfoOverlay()
                 }
                 true
             }
-            KeyEvent.KEYCODE_MENU -> {
-                toggleTrafficMonitor()
-                true
-            }
             KeyEvent.KEYCODE_BACK -> {
-                moveTaskToBack(true)
+                when {
+                    streamInfoOverlay.visibility == View.VISIBLE -> {
+                        streamInfoOverlay.visibility = View.GONE
+                    }
+                    isStreaming || audioOnlyOverlay.visibility == View.VISIBLE -> {
+                        stopCurrentSessionAndReturnToReady()
+                    }
+                    else -> moveTaskToBack(true)
+                }
                 true
             }
             else -> super.onKeyDown(keyCode, event)
@@ -368,8 +426,20 @@ class MainActivity : Activity() {
     private fun configureRemoteActions() {
         waitingOverlay.setOnClickListener { openSettings() }
         waitingOverlay.post { waitingOverlay.requestFocus() }
+        settingsButton.setOnClickListener { openSettings() }
+        helpButton.setOnClickListener { showConnectionHelp() }
         permissionButton.setOnClickListener { openOverlayPermissionSettings() }
+        streamInfoStopButton.setOnClickListener {
+            stopCurrentSessionAndReturnToReady()
+        }
+        streamInfoFitButton.setOnClickListener {
+            cycleScreenFit()
+            showStreamInfoOverlay()
+        }
         streamInfoDiagnosticsButton.setOnClickListener {
+            startActivity(Intent(this, DiagnosticsActivity::class.java))
+        }
+        streamInfoTrafficButton.setOnClickListener {
             toggleTrafficMonitor()
             streamInfoOverlay.removeCallbacks(hideStreamInfoOverlay)
         }
@@ -501,9 +571,23 @@ class MainActivity : Activity() {
         val selectedSize = videoSize ?: ReceiverPreferences.selectedVideoSize(this)
         val sourceWidth = if (streamVideoWidth > 0) streamVideoWidth else selectedSize.width
         val sourceHeight = if (streamVideoHeight > 0) streamVideoHeight else selectedSize.height
+        val fitMode = ReceiverPreferences.screenFit(this)
+        if (fitMode == ReceiverPreferences.SCREEN_FIT_STRETCH) {
+            val currentParams = surfaceView.layoutParams
+            if (currentParams.width != parentWidth || currentParams.height != parentHeight) {
+                surfaceView.layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            }
+            return
+        }
+
         var width = parentWidth
         var height = width * sourceHeight / sourceWidth
-        if (height > parentHeight) {
+        val shouldCrop = fitMode == ReceiverPreferences.SCREEN_FIT_FILL
+        if ((!shouldCrop && height > parentHeight) || (shouldCrop && height < parentHeight)) {
             height = parentHeight
             width = height * sourceWidth / sourceHeight
         }
@@ -515,14 +599,19 @@ class MainActivity : Activity() {
     }
 
     private fun handleReceiverState(state: ReceiverState) {
+        if (::pairingOverlay.isInitialized && state != ReceiverState.PAIRING) {
+            pairingOverlay.visibility = View.GONE
+        }
         when (state) {
             ReceiverState.IDLE_ADVERTISING -> {
                 showWaitingStatus()
                 applyWakeMode()
             }
+            ReceiverState.PAIRING -> showStreamStatus("Pairing")
             ReceiverState.VIDEO_ACTIVE -> hideStatus()
             ReceiverState.AUDIO_ACTIVE -> showAudioOnlyStatus()
             ReceiverState.VIDEO_STALLED -> showStreamStatus(getString(R.string.status_recovering))
+            ReceiverState.FIRST_RUN,
             ReceiverState.STARTING,
             ReceiverState.STOPPED,
             ReceiverState.ERROR_RECOVERABLE -> showWaitingStatus()
@@ -539,41 +628,48 @@ class MainActivity : Activity() {
         }
         updateSurfaceLayout(playbackSurface)
         audioOnlyOverlay.visibility = View.GONE
+        pairingOverlay.visibility = View.GONE
+        audioVisualizer.configure(enabled = false, reduceMotion = true)
         audioVolumeOverlay.visibility = View.GONE
         streamInfoOverlay.visibility = View.GONE
+        pairingOverlay.visibility = View.GONE
         waitingOverlay.visibility = View.VISIBLE
         versionLabel.visibility = View.VISIBLE
         updateWaitingStatus()
+        startIdleClock()
         checkOverlayPermission()
         showControl(waitingOverlay)
         waitingOverlay.requestFocus()
     }
 
     private fun showAudioOnlyStatus() {
-        isStreaming = false
+        isStreaming = true
         streamStatus = getString(R.string.status_audio_only)
-        updateWaitingStatus()
-        waitingOverlay.visibility = View.VISIBLE
-        versionLabel.visibility = View.VISIBLE
+        waitingOverlay.visibility = View.GONE
+        stopIdleClock()
+        versionLabel.visibility = View.GONE
         audioOnlyOverlay.visibility = View.VISIBLE
         audioVolumeOverlay.visibility = View.GONE
+        permissionExplanation.visibility = View.GONE
+        streamInfoOverlay.visibility = View.GONE
+        audioOnlySubtitle.text = "${runtime?.deviceDisplayName ?: receiverDeviceName}\nAudio route: ${currentAudioRouteSummary()}"
+        configureAudioOnlyStyle()
         checkOverlayPermission()
-        showControl(waitingOverlay)
         showControl(audioOnlyOverlay)
+        audioOnlyOverlay.requestFocus()
     }
 
     private fun updateWaitingStatus() {
         versionLabel.text = "v${BuildConfig.VERSION_NAME}"
         receiverDeviceName = runtime?.deviceDisplayName ?: receiverDeviceName
-        deviceNameLabel.text = "Available as $receiverDeviceName"
-        val network = runtime?.getLocalIpAddress() ?: "unknown"
-        val resolution = ReceiverPreferences.videoModeSummary(this)
+        deviceNameLabel.text = receiverDeviceName
+        val quality = ReceiverPreferences.qualityProfileSummary(this)
         statusLabel.text = if (streamStatus == getString(R.string.status_audio_only)) {
-            "${getString(R.string.status_audio_playing)}\nNetwork: $network"
+            "${getString(R.string.status_audio_playing)}\nAudio: ${currentAudioRouteSummary()}"
         } else {
-            "${getString(R.string.status_waiting)}\nResolution: $resolution\nNetwork: $network\n$streamStatus"
+            "${getString(R.string.status_waiting)}\n${getString(R.string.connection_hint)}\nQuality: $quality"
         }
-        discoveryStatusView.text = discoveryStatus
+        discoveryStatusView.text = "Security: ${ReceiverPreferences.securityModeSummary(this)}"
         updateAudioVolumeUi()
     }
 
@@ -582,15 +678,38 @@ class MainActivity : Activity() {
             isStreaming = true
             streamStatus = getString(R.string.status_streaming)
             waitingOverlay.visibility = View.GONE
+            stopIdleClock()
             audioOnlyOverlay.visibility = View.GONE
+            audioVisualizer.configure(enabled = false, reduceMotion = true)
+            pairingOverlay.visibility = View.GONE
             permissionExplanation.visibility = View.GONE
         }
     }
 
     private fun showStreamStatus(status: String) {
         streamStatus = status
+        if (runtime?.state == ReceiverState.PAIRING) {
+            pairingPinLabel.text = runtime?.pairingPin ?: "----"
+            pairingOverlay.visibility = View.VISIBLE
+            showControl(pairingOverlay)
+            pairingOverlay.requestFocus()
+        } else if (::pairingOverlay.isInitialized) {
+            pairingOverlay.visibility = View.GONE
+        }
         if (::statusLabel.isInitialized && !isStreaming) {
             updateWaitingStatus()
+        }
+    }
+
+    private fun startIdleClock() {
+        idleClockLabel.removeCallbacks(updateIdleClock)
+        idleClockLabel.post(updateIdleClock)
+    }
+
+    private fun stopIdleClock() {
+        if (::idleClockLabel.isInitialized) {
+            idleClockLabel.removeCallbacks(updateIdleClock)
+            idleClockLabel.visibility = View.GONE
         }
     }
 
@@ -613,6 +732,17 @@ class MainActivity : Activity() {
 
     private fun openSettings() {
         startActivity(Intent(this, SettingsActivity::class.java))
+    }
+
+    private fun maybeShowFirstRun() {
+        if (hasShownFirstRunDialog || ReceiverPreferences.firstRunComplete(this)) {
+            return
+        }
+        hasShownFirstRunDialog = true
+        ReceiverPreferences.prefs(this).edit()
+            .putBoolean(ReceiverPreferences.KEY_FIRST_RUN_COMPLETE, true)
+            .apply()
+        startActivity(Intent(this, OnboardingActivity::class.java))
     }
 
     private fun loadAudioVolume(): Float {
@@ -699,16 +829,19 @@ class MainActivity : Activity() {
         }
         val info = buildString {
             appendLine(boundRuntime.deviceDisplayName)
-            appendLine(resolution)
+            appendLine("Resolution: $resolution")
+            appendLine("Quality: ${ReceiverPreferences.qualityProfileSummary(this@MainActivity)}")
+            appendLine("Screen fit: ${ReceiverPreferences.screenFitSummary(this@MainActivity)}")
+            appendLine("Audio: ${currentAudioRouteSummary()}")
+            appendLine("State: ${boundRuntime.state}")
             if (audioOnlyOverlay.visibility == View.VISIBLE || boundRuntime.state == ReceiverState.AUDIO_ACTIVE) {
                 appendLine("Audio active")
             }
-            append("Network: ${boundRuntime.getLocalIpAddress()}")
         }
         streamInfoOverlayText.text = info
         streamInfoOverlay.visibility = View.VISIBLE
         showControl(streamInfoOverlay)
-        streamInfoDiagnosticsButton.requestFocus()
+        streamInfoStopButton.requestFocus()
         streamInfoOverlay.removeCallbacks(hideStreamInfoOverlay)
         streamInfoOverlay.postDelayed(hideStreamInfoOverlay, STREAM_INFO_DURATION_MS)
     }
@@ -719,6 +852,28 @@ class MainActivity : Activity() {
         if (trafficMonitor.visibility == View.VISIBLE) {
             showControl(trafficMonitor)
             trafficMonitor.requestFocus()
+        }
+    }
+
+    private fun configureAudioOnlyStyle() {
+        val display = ReceiverPreferences.audioOnlyDisplay(this)
+        val reduceMotion = ReceiverPreferences.reduceMotion(this)
+        val visualizerEnabled = ReceiverPreferences.visualizerEnabled(this) &&
+            display != ReceiverPreferences.AUDIO_ONLY_STATUS &&
+            display != ReceiverPreferences.AUDIO_ONLY_MINIMAL
+        audioVisualizer.configure(
+            enabled = visualizerEnabled,
+            reduceMotion = reduceMotion
+        )
+        audioOnlySubtitle.visibility = if (display == ReceiverPreferences.AUDIO_ONLY_MINIMAL) {
+            View.GONE
+        } else {
+            View.VISIBLE
+        }
+        audioVolumeLabel.visibility = if (display == ReceiverPreferences.AUDIO_ONLY_MINIMAL) {
+            View.GONE
+        } else {
+            View.VISIBLE
         }
     }
 
@@ -742,84 +897,6 @@ class MainActivity : Activity() {
                 wakeNudgePending = false
             }
         }
-    }
-
-    private fun handleTrafficMonitorGesture(event: MotionEvent) {
-        if (!isStreaming) {
-            isTrafficGestureCandidate = false
-            return
-        }
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                trafficGestureStartX = event.x
-                trafficGestureStartY = event.y
-                val edgeSize = TRAFFIC_GESTURE_EDGE_DP * resources.displayMetrics.density
-                isTrafficGestureCandidate = event.x >= window.decorView.width - edgeSize &&
-                    event.y <= edgeSize
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (!isTrafficGestureCandidate || trafficMonitor.visibility == View.VISIBLE) {
-                    return
-                }
-                val draggedLeft = trafficGestureStartX - event.x
-                val draggedDown = event.y - trafficGestureStartY
-                val dragThreshold = TRAFFIC_GESTURE_DRAG_DP * resources.displayMetrics.density
-                if (draggedLeft >= dragThreshold || draggedDown >= dragThreshold) {
-                    trafficMonitor.visibility = View.VISIBLE
-                    showControl(trafficMonitor)
-                    isTrafficGestureCandidate = false
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isTrafficGestureCandidate = false
-            }
-        }
-    }
-
-    private fun handleVolumeGesture(event: MotionEvent): Boolean {
-        if (!isStreaming) {
-            isVolumeGestureCandidate = false
-            isAdjustingVolume = false
-            return false
-        }
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                volumeGestureStartY = event.y
-                volumeGestureStartLevel = audioVolume
-                isAdjustingVolume = false
-                val edgeSize = VOLUME_GESTURE_EDGE_DP * resources.displayMetrics.density
-                isVolumeGestureCandidate = event.x >= window.decorView.width - edgeSize &&
-                    event.y > edgeSize
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (!isVolumeGestureCandidate) {
-                    return false
-                }
-                val verticalDrag = volumeGestureStartY - event.y
-                val range = VOLUME_GESTURE_RANGE_DP * resources.displayMetrics.density
-                if (!isAdjustingVolume && kotlin.math.abs(verticalDrag) < VOLUME_GESTURE_START_DP * resources.displayMetrics.density) {
-                    return false
-                }
-                isAdjustingVolume = true
-                setAudioVolume(volumeGestureStartLevel + verticalDrag / range, persist = false)
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                if (isAdjustingVolume) {
-                    audioVolume = loadAudioVolume()
-                    runtime?.setAudioVolume(audioVolume)
-                }
-                val consumed = isAdjustingVolume
-                isVolumeGestureCandidate = false
-                isAdjustingVolume = false
-                return consumed
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                isVolumeGestureCandidate = false
-                isAdjustingVolume = false
-            }
-        }
-        return false
     }
 
     private fun logSupportedCodecs() {
@@ -852,6 +929,109 @@ class MainActivity : Activity() {
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
+    private fun cycleScreenFit() {
+        val values = listOf(
+            ReceiverPreferences.SCREEN_FIT_FIT,
+            ReceiverPreferences.SCREEN_FIT_FILL,
+            ReceiverPreferences.SCREEN_FIT_STRETCH
+        )
+        val current = ReceiverPreferences.screenFit(this)
+        val nextIndex = (values.indexOf(current).takeIf { it >= 0 } ?: 0) + 1
+        ReceiverPreferences.prefs(this).edit()
+            .putString(ReceiverPreferences.KEY_SCREEN_FIT, values[nextIndex % values.size])
+            .apply()
+        updateSurfaceLayout(playbackSurface)
+    }
+
+    private fun stopCurrentSessionAndReturnToReady() {
+        val boundRuntime = runtime ?: return
+        val selectedSize = ReceiverPreferences.selectedVideoSize(this)
+        boundRuntime.stop()
+        boundRuntime.start(selectedSize.width, selectedSize.height, loadAudioVolume())
+        attachSurfaceIfReady(boundRuntime)
+        streamInfoOverlay.visibility = View.GONE
+        trafficMonitor.visibility = View.GONE
+        showWaitingStatus()
+    }
+
+    private fun showConnectionHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Connect with AirPlay")
+            .setMessage(
+                "iPhone or iPad:\n" +
+                    "1. Connect to the same Wi-Fi as this TV.\n" +
+                    "2. Open Control Center.\n" +
+                    "3. Choose Screen Mirroring, then select $receiverDeviceName.\n\n" +
+                    "Mac:\n" +
+                    "1. Connect to the same network.\n" +
+                    "2. Open Control Center or Displays.\n" +
+                    "3. Choose Screen Mirroring or AirPlay, then select $receiverDeviceName.\n\n" +
+                    "If this TV does not appear, open Settings and restart discovery. Guest Wi-Fi, VPNs, and router isolation can block discovery."
+            )
+            .setPositiveButton("Done", null)
+            .show()
+    }
+
+    private fun currentAudioRouteSummary(): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return "TV speakers"
+        }
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val preferred = outputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+        } ?: outputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_HDMI ||
+                it.type == AudioDeviceInfo.TYPE_HDMI_ARC
+        } ?: outputs.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+        }
+        return when (preferred?.type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth"
+            AudioDeviceInfo.TYPE_HDMI,
+            AudioDeviceInfo.TYPE_HDMI_ARC -> "HDMI / ARC"
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "TV speakers"
+            else -> "System output"
+        }
+    }
+
+    private fun registerAudioRouteCallback() {
+        if (audioDeviceCallback != null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return
+        }
+        val callback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAudioRouteUi()
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                refreshAudioRouteUi()
+            }
+        }
+        audioDeviceCallback = callback
+        audioManager.registerAudioDeviceCallback(callback, null)
+    }
+
+    private fun unregisterAudioRouteCallback() {
+        val callback = audioDeviceCallback ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioManager.unregisterAudioDeviceCallback(callback)
+        }
+        audioDeviceCallback = null
+    }
+
+    private fun refreshAudioRouteUi() {
+        runOnUiThread {
+            if (audioOnlyOverlay.visibility == View.VISIBLE) {
+                audioOnlySubtitle.text = "${runtime?.deviceDisplayName ?: receiverDeviceName}\nAudio route: ${currentAudioRouteSummary()}"
+            }
+            if (streamInfoOverlay.visibility == View.VISIBLE) {
+                showStreamInfoOverlay()
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "Receiver"
         private const val WAKE_LOCK_TAG = "ReceiverActive"
@@ -859,18 +1039,15 @@ class MainActivity : Activity() {
         private const val WAKE_NUDGE_DURATION_MS = 10_000L
         private const val WAKE_NUDGE_THROTTLE_MS = 5_000L
         private const val CONTROL_OVERLAY_ELEVATION_DP = 24f
-        private const val TRAFFIC_GESTURE_EDGE_DP = 96f
-        private const val TRAFFIC_GESTURE_DRAG_DP = 48f
-        private const val VOLUME_GESTURE_EDGE_DP = 120f
-        private const val VOLUME_GESTURE_START_DP = 12f
-        private const val VOLUME_GESTURE_RANGE_DP = 240f
         private const val VOLUME_OVERLAY_DURATION_MS = 1_500L
         private const val STREAM_INFO_DURATION_MS = 3_000L
+        private const val CLOCK_UPDATE_MS = 1_000L
+        private const val CLOCK_SHIFT_INTERVAL_MS = 30_000L
+        private const val CLOCK_SHIFT_PX = 2f
         private const val MIN_AUDIO_VOLUME = 0.0f
         private const val MAX_AUDIO_VOLUME = 1.0f
         private const val DEFAULT_AUDIO_VOLUME = 1.0f
         private const val DEBUG_CODECS = false
-
         @Suppress("DEPRECATION")
         private val IMMERSIVE_FLAGS =
             View.SYSTEM_UI_FLAG_FULLSCREEN or

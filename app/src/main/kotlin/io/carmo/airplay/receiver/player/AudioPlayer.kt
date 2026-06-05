@@ -18,12 +18,16 @@ class AudioPlayer(
     context: Context,
     initialVolume: Float = DEFAULT_VOLUME,
     private val onLatencySample: (Long) -> Unit = {},
-    private val onAudioUnderrun: () -> Unit = {}
+    private val onAudioUnderrun: () -> Unit = {},
+    audioStableMode: Boolean = false
 ) : Thread("ReceiverAudioPlayer") {
 
     private val appContext = context.applicationContext
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val packets = ArrayBlockingQueue<PCMPacket>(MAX_BUFFERED_PACKETS)
+    private val maxQueuedPackets = if (audioStableMode) AUDIO_STABLE_MAX_QUEUED_PACKETS else MAX_QUEUED_PACKETS
+    private val prebufferPackets = if (audioStableMode) AUDIO_STABLE_PREBUFFER_PACKETS else PREBUFFER_PACKETS
+    private val audioBufferMultiplier = if (audioStableMode) AUDIO_STABLE_BUFFER_MULTIPLIER else AUDIO_BUFFER_MULTIPLIER
     private val playbackLock = Any()
     @Volatile private var volume = initialVolume.coerceIn(MIN_VOLUME, MAX_VOLUME)
     private var track: AudioTrack? = createAudioTrack()
@@ -88,7 +92,7 @@ class AudioPlayer(
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         while (!isStopped) {
             try {
-                if (!hasStartedPlayback && packets.size < PREBUFFER_PACKETS) {
+                if (!hasStartedPlayback && packets.size < prebufferPackets) {
                     Thread.sleep(PREBUFFER_WAIT_MS)
                     continue
                 }
@@ -227,7 +231,7 @@ class AudioPlayer(
 
     private fun trimBacklog(): Int {
         var trimmed = 0
-        while (packets.size >= MAX_QUEUED_PACKETS) {
+        while (packets.size >= maxQueuedPackets) {
             packets.poll()?.release() ?: return trimmed
             trimmed += 1
         }
@@ -245,7 +249,7 @@ class AudioPlayer(
         if (minBufferSize <= 0) {
             minBufferSize = SAMPLE_RATE / 10 * 2 * 2
         }
-        val bufferSize = minBufferSize * AUDIO_BUFFER_MULTIPLIER
+        val bufferSize = minBufferSize * audioBufferMultiplier
 
         val audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             AudioTrack.Builder()
@@ -277,8 +281,8 @@ class AudioPlayer(
         Log.i(
             TAG,
             "AudioTrack ready: minBuffer=$minBufferSize bytes, buffer=$bufferSize bytes, " +
-                "bufferMs=${bytesToMs(bufferSize)}, prebuffer=$PREBUFFER_PACKETS packets, " +
-                "prebufferMs=${packetsToMs(PREBUFFER_PACKETS)}, queueLimit=$MAX_QUEUED_PACKETS packets"
+                "bufferMs=${bytesToMs(bufferSize)}, prebuffer=$prebufferPackets packets, " +
+                "prebufferMs=${packetsToMs(prebufferPackets)}, queueLimit=$maxQueuedPackets packets"
         )
         return audioTrack
     }
@@ -317,9 +321,12 @@ class AudioPlayer(
         private const val MAX_VOLUME = 1.0f
         private const val MAX_BUFFERED_PACKETS = 128
         private const val MAX_QUEUED_PACKETS = 96
-        private const val PREBUFFER_PACKETS = 8
+        private const val PREBUFFER_PACKETS = 24
+        private const val AUDIO_STABLE_MAX_QUEUED_PACKETS = 112
+        private const val AUDIO_STABLE_PREBUFFER_PACKETS = 32
+        private const val AUDIO_STABLE_BUFFER_MULTIPLIER = 10
         private const val PREBUFFER_WAIT_MS = 10L
-        private const val AUDIO_BUFFER_MULTIPLIER = 3
+        private const val AUDIO_BUFFER_MULTIPLIER = 8
         private const val AUDIO_LOG_INTERVAL_MS = 5_000L
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO

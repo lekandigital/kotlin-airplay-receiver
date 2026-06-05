@@ -32,7 +32,7 @@ class DNSNotify(
             "flags" to "0x4",
             "vv" to "2",
             "model" to "AppleTV2,1",
-            "pw" to "false",
+            "pw" to ReceiverPreferences.requiresPairingPassword(context).toString(),
             "rhd" to "5.6.0.0",
             "pk" to "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7",
             "pi" to "2e388006-13ba-4041-9a67-25dd4a43d536"
@@ -55,7 +55,7 @@ class DNSNotify(
             "ft" to "0x5A7FFFF7,0x1E",
             "am" to "AppleTV2,1",
             "rhd" to "5.6.0.0",
-            "pw" to "false",
+            "pw" to ReceiverPreferences.requiresPairingPassword(context).toString(),
             "sv" to "false",
             "tp" to "UDP",
             "txtvers" to "1",
@@ -236,6 +236,8 @@ class DNSNotify(
         private const val RAOP_LABEL = "RAOP"
         private const val MAX_SERVICE_NAME_LENGTH = 63
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
+
+        fun suggestedDeviceName(context: Context): String = resolveDeviceName(context)
 
         private fun resolveDeviceName(context: Context): String {
             val customName = ReceiverPreferences.customDeviceName(context)

@@ -1,83 +1,116 @@
-# Receiver
+# AirPlay Receiver
 
 ![Icon](docs/icon-256.png)
 
-Receiver is a small Android AirPlay receiver tailored for the Lenovo ThinkSmart View. It was custom made for the device and the project background is described in [this Tao of Mac post](https://taoofmac.com/space/blog/2023/04/22/1330).
+AirPlay Receiver is an Android TV / Google TV app that makes a TV discoverable as an AirPlay and RAOP receiver on the local network. It is designed for D-pad remotes, leanback launchers, and couch-distance readability.
 
-The application starts listening as soon as it is launched. The startup pane exposes the few choices that need to be made before a sender connects; after that, the app behaves like a dedicated receiver.
+The native RAOP, mirroring, FairPlay, AAC, and H.264 stack is preserved. The Kotlin layer focuses on TV app behavior: foreground-service lifetime, discovery, the ready screen, playback surface management, settings, diagnostics, and user-facing controls.
 
 ## What It Does
 
-- Advertises itself on the local network as an AirPlay/RAOP target using the Android device name.
-- Receives H.264 screen mirroring and renders it to a centered proportional `SurfaceView`.
-- Optionally receives audio, decodes AAC in the native RAOP stack, and plays PCM through `AudioTrack`.
-- Keeps the UI intentionally minimal: a centered startup pane is shown while waiting, then the app behaves like a dedicated receiver. A transparent traffic monitor can be pulled in from the top-right corner when needed.
+- Advertises the TV on the local network as an AirPlay / RAOP target.
+- Receives H.264 screen mirroring and renders it to a `SurfaceView`.
+- Receives AirPlay audio, decodes AAC in the native stack, and plays PCM through `AudioTrack`.
+- Keeps the TV discoverable after disconnect by returning to the ready screen by default.
+- Provides remote-first settings for receiver name, quality profile, screen fit, audio sync, display behavior, security mode, discovery restart, diagnostics, and receiver identity reset.
+- Shows a first-run setup flow for receiver name, security mode, quality profile, and connection instructions.
+- Shows a dedicated audio-only screen with metadata placeholders and an optional low-cost spectrum visualizer.
+
+## Target Devices
+
+This app targets Android TV and Google TV devices such as NVIDIA Shield, Chromecast with Google TV, and TV sets running Android TV / Google TV.
+
+- Leanback launcher support is required in the manifest.
+- Pointer input is not required for the primary interaction model.
+- All core controls are reachable with D-pad, Select, Back, Home, and the remote volume keys.
+- The app is landscape-only.
 
 ## Runtime Controls
 
-Receiver starts listening immediately, but the waiting screen exposes stream resolution, display behavior, and audio choices before a sender connects. A small corner label shows the app version so installed builds are easy to confirm on-device.
+The ready screen shows a burn-in-conscious clock, receiver name, `Ready to AirPlay`, a short connection hint, the current quality profile, and the security mode. It does not show IP addresses, receiver IDs, sender history, or other diagnostics by default.
 
-Stream resolution controls what Receiver advertises in the AirPlay `/info` response:
+Press Select on the ready screen to open settings. The ready screen also has explicit Settings and Help buttons for D-pad focus.
 
-- `720p`: advertises and decodes a 1280x720 stream. This is the default for lowest latency on the ThinkSmart View.
-- `1080p`: advertises and decodes a 1920x1080 stream, then lets the Android surface scale it down to the device display.
+During video playback, press Select to show the playback overlay. The overlay includes the receiver name, resolution, quality profile, screen fit, audio route, runtime state, and quick actions:
 
-Display behavior controls what Receiver does while it is active:
+- Stop: disconnect the current stream and return to ready.
+- Screen fit: cycle Fit, Fill, and Stretch.
+- Diagnostics: open the diagnostics screen.
+- Traffic: show or hide the diagnostic traffic monitor.
 
-- `OS default`: lets Android manage dimming, sleep, and screensaver behavior.
-- `Always awake`: keeps the display on while Receiver is active.
-- `Wake on activity`: lets the display sleep, then wakes Receiver for major visual activity such as a new stream after idle or H.264 key/config frames.
+Volume uses the Android media volume keys on the remote. Diagnostic controls live in the playback overlay.
 
-The selected stream resolution and display policy are remembered on the device.
+## Quality Profiles
 
-During playback, drag in from the top-right corner to reveal the transparent traffic monitor. Tap the monitor to hide it. The monitor shows recent completed media bandwidth samples with adaptive `b/s`, `kb/s`, or `Mb/s` labels plus Receiver's local packet-to-render/write latency; it is a diagnostic overlay, not an end-to-end AirPlay latency measurement.
+Quality profiles map onto the existing advertised stream-size plumbing:
 
-Audio is off by default because Receiver prioritizes minimum video latency. Enable `Accept audio` before connecting only when audio is needed; when it is off, Receiver advertises reduced audio capability and rejects the sender's audio setup while keeping mirroring available. When audio is accepted and a stream is active, swipe vertically from the right edge to adjust Android media volume; a visible blue volume bar is shown on the waiting screen and briefly as a vertical on-video indicator during swipe changes.
+- Auto: detect the display and choose 720p or 1080p.
+- Low Latency: advertise 720p and keep latency conservative.
+- Balanced: advertise 1080p with moderate defaults.
+- Best Quality: advertise 1080p for the cleanest source stream.
+- Compatibility: advertise 720p for older or problematic senders.
+- Audio Stable: advertise 720p and prioritize audio robustness.
 
-When the sender stops or disconnects from a mirrored stream, Receiver exits and lets Android return to the previous/system screen.
+Frame-rate matching is exposed as a setting and applies an API 30+ `Surface.setFrameRate()` hint when enabled. The current media path uses a 60 fps fixed-source hint until sender frame-rate detection is added.
 
-## Target Device
+## Security Modes
 
-Receiver is built around the Lenovo ThinkSmart View and its Android 8.1 runtime. The UI is tuned for the device's 8-inch 1280x800 WVA touchscreen, while the media decoder defaults to 1280x720 and renders into a centered 16:9 surface without distortion. The optional 1080p mode advertises 1920x1080 for sources that benefit from it, then downscales through the display surface.
+The settings screen includes these security modes:
 
-It may run on other Android devices, but that is not the design target.
+- Open - no pairing required. This is the currently enforced behavior.
+- PIN for new devices. Planned future default once native PIN verification is implemented.
+- PIN every session. Planned.
+- Trusted devices only. Planned.
 
-## Release APKs
+PIN and trusted-only modes are UI scaffolding until the native stack can enforce AirPlay pairing. Discovery intentionally remains compatible with the working receiver path (`pw=false`) until native PIN verification and stable sender identifiers are implemented.
 
-The project is a Kotlin Android application with a native C/C++ streaming stack. Release APKs are built by GitHub Actions.
+Trusted devices, blocked devices, guest mode, and takeover protection are represented in the settings model. Trust and block lists are persisted and manageable, but they are not enforced until native pairing identifiers are available.
 
-The workflow in `.github/workflows/android.yml` installs the expected Android toolchain, builds the release APK on every push, pull request, or manual run, and uploads `Receiver-release.apk` as a downloadable workflow artifact. Tag pushes also create a GitHub Release and attach the APK as a release asset.
+## Known Limits
 
-Release APKs are signed with v1 and v2 APK signatures enabled for Android 8.1 compatibility. If signing secrets are configured in GitHub Actions, CI uses that stable release key; otherwise it falls back to Android debug signing for ad hoc sideloading. If Android still says "App not installed" after a signing-key change, uninstall the previous `io.carmo.airplay.receiver` build first and then install the new APK.
+This project does not claim universal AirPlay compatibility. AirPlay behavior depends on sender device, app, OS version, network configuration, and the native protocol stack.
 
-The local Gradle wrapper is kept only so Actions can run a reproducible build from the repository. Actions uses Gradle's setup action for caching, but the wrapper still defines the Gradle version.
+Known practical limits:
+
+- DRM-protected or app-restricted streams may not play.
+- Some senders may negotiate protocol features this receiver does not yet implement.
+- Guest Wi-Fi, VPNs, multicast filtering, and client isolation can prevent discovery.
+- PIN pairing UI is scaffolded, but native PIN verification is still required for real enforcement.
+- Metadata and album art for audio-only playback depend on native metadata forwarding; the current TV screen shows generic AirPlay audio metadata.
+
+## Build And Release
+
+The app builds as a Kotlin Android application with a native C/C++ stack through CMake and the Android NDK.
+
+Current release posture:
+
+- Minimum SDK: Android 8.1 / API 27.
+- Target SDK: API 34.
+- ABI: `arm64-v8a` and `armeabi-v7a`.
+- The AAB includes 64-bit native libraries for Play compliance while retaining 32-bit output for Android TV devices that still ship a 32-bit userspace.
+- Compose is enabled for the onboarding flow with a conservative AndroidX TV foundation dependency; the playback and settings screens remain on the existing View/XML path for now.
+- Native shared libraries are linked with `-Wl,-z,max-page-size=16384` for 16 KB page-size readiness.
+- Android App Bundle output is supported through Gradle's `bundleRelease` task.
+- APK output remains available through `assembleRelease` for local testing and sideloading.
+
+Release signing reads `signing.properties` when present and falls back to debug signing for local ad hoc builds. Do not commit keystores or signing secrets.
 
 ## Project Layout
 
 - `app/src/main/kotlin/io/carmo/airplay/receiver/` contains the Kotlin application code.
-- `app/src/main/java/com/apple/dnssd/` contains legacy Java DNS-SD compatibility bindings; runtime Bonjour advertisement now uses Android NSD.
+- `app/src/main/java/com/apple/dnssd/` contains legacy Java DNS-SD compatibility bindings.
 - `app/src/main/cpp/` contains the native AirPlay, RAOP, mirroring, AAC, crypto, and JNI code.
-- `docs/architecture.md` documents the runtime architecture and data flow.
-- `docs/performance.md` documents the Android 8.1 performance assumptions and tuning decisions.
-- `docs/vendor-audit.md` documents the retained vendored code and the clutter removed from upstream drops.
-
-## Optional Stable Signing
-
-For upgrade-safe sideloaded releases, configure these GitHub repository secrets before tagging a release:
-
-- `RECEIVER_RELEASE_KEYSTORE_BASE64`: base64-encoded PKCS#12 or JKS keystore.
-- `RECEIVER_RELEASE_KEYSTORE_PASSWORD`: keystore password.
-- `RECEIVER_RELEASE_KEY_ALIAS`: signing key alias.
-- `RECEIVER_RELEASE_KEY_PASSWORD`: signing key password.
-- `RECEIVER_RELEASE_KEYSTORE_TYPE`: optional, defaults to `pkcs12`.
+- `docs/architecture.md` documents runtime architecture and data flow.
+- `docs/performance.md` documents Android TV performance assumptions and tuning decisions.
+- `docs/vendor-audit.md` documents retained vendored code and license notes.
 
 ## License
 
-Receiver is distributed under GPLv3 because the retained native Playfair component is GPLv3. Third-party code keeps its original notices in the vendored source directories; see `docs/vendor-audit.md`.
+AirPlay Receiver is distributed under GPLv3 because the retained native Playfair component is GPLv3. Third-party code keeps its original notices in the vendored source directories; see `docs/vendor-audit.md`.
 
 ## App Identity
 
-- App name: `Receiver`
+- App name: `AirPlay Receiver`
 - Android application id: `io.carmo.airplay.receiver`
-- Minimum Android version: Android 8.1/API 27
-- Target Android version: Android 8.1/API 27
+- Minimum Android version: Android 8.1 / API 27
+- Target Android version: API 34

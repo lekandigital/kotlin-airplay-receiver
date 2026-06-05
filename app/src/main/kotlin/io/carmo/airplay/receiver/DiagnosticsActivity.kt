@@ -19,6 +19,7 @@ class DiagnosticsActivity : Activity() {
 
     private lateinit var diagnosticsText: TextView
     private lateinit var copyButton: Button
+    private lateinit var restartDiscoveryButton: Button
     private var runtime: ReceiverRuntime? = null
     private var isBound = false
 
@@ -42,7 +43,9 @@ class DiagnosticsActivity : Activity() {
         setContentView(R.layout.activity_diagnostics)
         diagnosticsText = findViewById(R.id.diagnostics_text)
         copyButton = findViewById(R.id.copy_diagnostics_button)
+        restartDiscoveryButton = findViewById(R.id.restart_discovery_button)
         copyButton.setOnClickListener { copyDiagnostics() }
+        restartDiscoveryButton.setOnClickListener { restartDiscovery() }
         copyButton.post { copyButton.requestFocus() }
 
         startReceiverForegroundService()
@@ -79,6 +82,12 @@ class DiagnosticsActivity : Activity() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(ClipData.newPlainText("Receiver diagnostics", diagnosticsText.text))
         Toast.makeText(this, R.string.diagnostics_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun restartDiscovery() {
+        runtime?.refreshDiscovery()
+        refreshDiagnostics()
+        Toast.makeText(this, R.string.restart_discovery, Toast.LENGTH_SHORT).show()
     }
 
     private fun startReceiverForegroundService() {

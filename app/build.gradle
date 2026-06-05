@@ -10,7 +10,7 @@ if (releaseSigningFile.exists()) {
 }
 
 android {
-    compileSdk 31
+    compileSdk 34
     namespace "io.carmo.airplay.receiver"
 
     signingConfigs {
@@ -37,7 +37,7 @@ android {
     defaultConfig {
         applicationId "io.carmo.airplay.receiver"
         minSdk 27
-        targetSdk 27
+        targetSdk 34
         ndkVersion "25.1.8937393"
         versionCode 49
         versionName "0.4.12"
@@ -63,6 +63,12 @@ android {
             version "3.22.1"
         }
     }
+    buildFeatures {
+        compose true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.3.2'
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
@@ -79,9 +85,25 @@ android {
             jniLibs.srcDirs = ['libs']
         }
     }
+    bundle {
+        abi {
+            enableSplit = true
+        }
+        density {
+            enableSplit = true
+        }
+        language {
+            enableSplit = false
+        }
+    }
 
 }
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation "androidx.activity:activity-compose:1.6.1"
+    implementation "androidx.compose.foundation:foundation:1.3.0-rc01"
+    implementation "androidx.compose.material:material:1.3.0-rc01"
+    implementation "androidx.compose.ui:ui:1.3.0-rc01"
+    implementation "androidx.tv:tv-foundation:1.0.0-alpha03"
 }

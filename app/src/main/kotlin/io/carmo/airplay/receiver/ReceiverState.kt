@@ -8,6 +8,9 @@ package io.carmo.airplay.receiver
  * All components observe this state rather than maintaining their own flags.
  */
 enum class ReceiverState {
+    /** First launch is showing onboarding before the receiver is advertised. */
+    FIRST_RUN,
+
     /** Service not started or explicitly stopped. */
     STOPPED,
 
@@ -16,6 +19,9 @@ enum class ReceiverState {
 
     /** Servers running, DNS-SD registered, waiting for a sender. */
     IDLE_ADVERTISING,
+
+    /** A sender is being paired before media is accepted. */
+    PAIRING,
 
     /** An audio-only RAOP session is active. No video surface needed. */
     AUDIO_ACTIVE,
@@ -64,5 +70,6 @@ data class ReceiverSessionStats(
     val videoFramesRendered: Int = 0,
     val decoderRestarts: Int = 0,
     val audioUnderruns: Int = 0,
-    val preSurfacePacketsBuffered: Int = 0
+    val preSurfacePacketsBuffered: Int = 0,
+    val lastDisconnectReason: String? = null
 )

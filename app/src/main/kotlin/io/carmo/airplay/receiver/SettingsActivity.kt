@@ -94,28 +94,71 @@ class SettingsActivity : Activity() {
         val receiverId = ReceiverIdentity.receiverId(this)
         val ipAddress = runtime?.getLocalIpAddress() ?: "unknown"
         val rows = listOf(
-            SettingsRow.Item("name", "Receiver name", "Tap to edit with on-screen keyboard", deviceName),
+            SettingsRow.Section("Receiver"),
+            SettingsRow.Item("name", "Receiver name", "Edit the name shown in AirPlay", deviceName),
+            SettingsRow.Item(
+                "idle_clock",
+                "Idle screen",
+                "Clock screensaver while ready",
+                if (ReceiverPreferences.idleClockEnabled(this)) "Clock" else "Static ready"
+            ),
+            SettingsRow.Item("display", "Display behavior", "Screen behavior while receiving", ReceiverPreferences.wakeModeSummary(this)),
+            SettingsRow.Item("after_disconnect", "After disconnect", "What the TV should show after sender disconnects", ReceiverPreferences.afterDisconnectSummary(this)),
             SettingsRow.Item(
                 "boot",
                 "Start on boot",
                 "Start receiver service after TV boot",
                 if (prefs.getBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)) "On" else "Off"
             ),
-            SettingsRow.Item("resolution", "Stream resolution", "Current selection", ReceiverPreferences.videoModeSummary(this)),
-            SettingsRow.Item("display", "Display during streams", "Screen behavior while receiving", ReceiverPreferences.wakeModeSummary(this)),
-            SettingsRow.Item("after_disconnect", "After disconnect", "What the TV should show after sender disconnects", ReceiverPreferences.afterDisconnectSummary(this)),
+            SettingsRow.Section("Security"),
+            SettingsRow.Item("security_mode", "Security mode", "Pairing UI preference; not enforced yet", ReceiverPreferences.securityModeSummary(this)),
+            SettingsRow.Item(
+                "guest_mode",
+                "Guest mode",
+                "Planned preference; does not change sender access yet",
+                if (ReceiverPreferences.guestMode(this)) "On" else "Off"
+            ),
+            SettingsRow.Item("trusted_devices", "Trusted devices", "Stored list only; not enforced yet", "${SenderTrustStore.trustedDevices(this).size} saved"),
+            SettingsRow.Item("blocked_devices", "Blocked devices", "Stored list only; not enforced yet", "${SenderTrustStore.blockedDevices(this).size} saved"),
+            SettingsRow.Item("takeover_protection", "Takeover protection", "Planned sender rule; not enforced yet", ReceiverPreferences.takeoverProtectionSummary(this)),
             SettingsRow.Item(
                 "takeover",
-                "Automatic video takeover",
+                "Bring receiver to front",
                 overlayStatus,
                 if (ReceiverPreferences.automaticVideoTakeover(this)) "On" else "Off"
             ),
-            SettingsRow.Item("audio_only", "Audio-only display", "Apple Music and other audio-only sessions", ReceiverPreferences.audioOnlyDisplaySummary(this)),
-            SettingsRow.Section("Diagnostics"),
-            SettingsRow.Item("diagnostics_level", "Diagnostics", "Logging detail", ReceiverPreferences.diagnosticsSummary(this)),
-            SettingsRow.Item("open_diagnostics", "Open diagnostics", "Receiver ID, state history, and session stats", ""),
+            SettingsRow.Section("Display & Video"),
+            SettingsRow.Item("quality", "Quality profile", "Resolution and buffering preference", ReceiverPreferences.qualityProfileSummary(this)),
+            SettingsRow.Item("screen_fit", "Screen fit", "How mirrored video fills the TV", ReceiverPreferences.screenFitSummary(this)),
+            SettingsRow.Item(
+                "frame_rate",
+                "Frame-rate matching",
+                "Use platform frame-rate hints when available",
+                if (ReceiverPreferences.frameRateMatching(this)) "On" else "Off"
+            ),
+            SettingsRow.Section("Audio"),
+            SettingsRow.Item("audio_sync", "Audio sync", "Stored offset; playback hook is pending", ReceiverPreferences.audioSyncSummary(this)),
+            SettingsRow.Item("audio_only", "Audio-only screen", "Apple Music and other audio-only sessions", ReceiverPreferences.audioOnlyDisplaySummary(this)),
+            SettingsRow.Item(
+                "visualizer",
+                "Spectrum visualizer",
+                "Optional audio-only animation",
+                if (ReceiverPreferences.visualizerEnabled(this)) "On" else "Off"
+            ),
+            SettingsRow.Section("Network"),
+            SettingsRow.Item("connection_help", "Connection help", "iPhone, iPad, Mac, and network checks", ""),
             SettingsRow.Item("restart_discovery", "Restart discovery", "Re-advertise AirPlay and RAOP services", ""),
             SettingsRow.Item("restart_receiver", "Restart receiver", "Restart local AirPlay server runtime", ""),
+            SettingsRow.Section("Accessibility"),
+            SettingsRow.Item(
+                "reduce_motion",
+                "Reduce motion",
+                "Disable visualizer and idle movement",
+                if (ReceiverPreferences.reduceMotion(this)) "On" else "Off"
+            ),
+            SettingsRow.Section("Advanced"),
+            SettingsRow.Item("diagnostics_level", "Diagnostics", "Logging detail", ReceiverPreferences.diagnosticsSummary(this)),
+            SettingsRow.Item("open_diagnostics", "Open diagnostics", "Receiver ID, state history, and session stats", ""),
             SettingsRow.Item("reset_identity", "Reset receiver identity", "Apple devices will see this as a new receiver", ""),
             SettingsRow.Section("About"),
             SettingsRow.Item("about", "About", "Version ${BuildConfig.VERSION_NAME} - ID $receiverId - IP $ipAddress", "")
@@ -128,14 +171,73 @@ class SettingsActivity : Activity() {
         if (row !is SettingsRow.Item) return
         when (row.id) {
             "name" -> showNameDialog()
+            "idle_clock" -> toggleBoolean(ReceiverPreferences.KEY_IDLE_CLOCK_ENABLED, true)
             "boot" -> toggleBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)
-            "resolution" -> cycleValue(
-                ReceiverPreferences.KEY_VIDEO_MODE,
-                listOf(ReceiverPreferences.VIDEO_MODE_AUTO, ReceiverPreferences.VIDEO_MODE_720P, ReceiverPreferences.VIDEO_MODE_1080P),
-                ReceiverPreferences.VIDEO_MODE_AUTO
+            "quality" -> cycleValue(
+                ReceiverPreferences.KEY_QUALITY_PROFILE,
+                listOf(
+                    ReceiverPreferences.QUALITY_AUTO,
+                    ReceiverPreferences.QUALITY_LOW_LATENCY,
+                    ReceiverPreferences.QUALITY_BALANCED,
+                    ReceiverPreferences.QUALITY_BEST,
+                    ReceiverPreferences.QUALITY_COMPATIBILITY,
+                    ReceiverPreferences.QUALITY_AUDIO_STABLE
+                ),
+                ReceiverPreferences.QUALITY_AUTO
             ) {
                 ReceiverPreferences.selectedVideoSize(this).let { runtime?.setVideoMode(it.width, it.height) }
             }
+            "screen_fit" -> cycleValue(
+                ReceiverPreferences.KEY_SCREEN_FIT,
+                listOf(
+                    ReceiverPreferences.SCREEN_FIT_FIT,
+                    ReceiverPreferences.SCREEN_FIT_FILL,
+                    ReceiverPreferences.SCREEN_FIT_STRETCH
+                ),
+                ReceiverPreferences.SCREEN_FIT_FIT
+            )
+            "audio_sync" -> cycleAudioSync()
+            "security_mode" -> cycleValue(
+                ReceiverPreferences.KEY_SECURITY_MODE,
+                listOf(
+                    ReceiverPreferences.SECURITY_OPEN,
+                    ReceiverPreferences.SECURITY_PIN_NEW_DEVICES,
+                    ReceiverPreferences.SECURITY_PIN_EVERY_SESSION,
+                    ReceiverPreferences.SECURITY_TRUSTED_ONLY
+                ),
+                ReceiverPreferences.SECURITY_OPEN
+            ) {
+                runtime?.refreshDiscovery()
+                if (ReceiverPreferences.securityMode(this) != ReceiverPreferences.SECURITY_OPEN) {
+                    showNativePairingPending()
+                }
+            }
+            "guest_mode" -> toggleBoolean(ReceiverPreferences.KEY_GUEST_MODE, false)
+            "trusted_devices" -> showDeviceList(
+                title = "Trusted devices",
+                devices = SenderTrustStore.trustedDevices(this),
+                emptyMessage = "No trusted devices yet. This list is scaffolding until native pairing provides sender identifiers.",
+                removeLabel = "Forget",
+                onRemove = { SenderTrustStore.forgetTrustedDevice(this, it) },
+                onClear = { SenderTrustStore.clearTrustedDevices(this) }
+            )
+            "blocked_devices" -> showDeviceList(
+                title = "Blocked devices",
+                devices = SenderTrustStore.blockedDevices(this),
+                emptyMessage = "No blocked devices yet. Blocking is not enforced until native pairing exposes sender identifiers.",
+                removeLabel = "Unblock",
+                onRemove = { SenderTrustStore.unblockDevice(this, it) },
+                onClear = { SenderTrustStore.clearBlockedDevices(this) }
+            )
+            "takeover_protection" -> cycleValue(
+                ReceiverPreferences.KEY_TAKEOVER_PROTECTION,
+                listOf(
+                    ReceiverPreferences.TAKEOVER_REJECT,
+                    ReceiverPreferences.TAKEOVER_ASK,
+                    ReceiverPreferences.TAKEOVER_ALLOW
+                ),
+                ReceiverPreferences.TAKEOVER_REJECT
+            )
             "display" -> cycleValue(
                 ReceiverPreferences.KEY_WAKE_MODE,
                 listOf(ReceiverPreferences.WAKE_MODE_DEFAULT, ReceiverPreferences.WAKE_MODE_ALWAYS, ReceiverPreferences.WAKE_MODE_ACTIVITY),
@@ -149,9 +251,25 @@ class SettingsActivity : Activity() {
             "takeover" -> toggleTakeover()
             "audio_only" -> cycleValue(
                 ReceiverPreferences.KEY_AUDIO_ONLY_DISPLAY,
-                listOf(ReceiverPreferences.AUDIO_ONLY_BACKGROUND, ReceiverPreferences.AUDIO_ONLY_STATUS),
+                listOf(
+                    ReceiverPreferences.AUDIO_ONLY_VISUALIZER,
+                    ReceiverPreferences.AUDIO_ONLY_STATUS,
+                    ReceiverPreferences.AUDIO_ONLY_BACKGROUND,
+                    ReceiverPreferences.AUDIO_ONLY_MINIMAL
+                ),
                 ReceiverPreferences.AUDIO_ONLY_BACKGROUND
             )
+            "visualizer" -> toggleBoolean(ReceiverPreferences.KEY_VISUALIZER_ENABLED, true)
+            "frame_rate" -> toggleBoolean(ReceiverPreferences.KEY_FRAME_RATE_MATCHING, true)
+            "reduce_motion" -> {
+                toggleBoolean(ReceiverPreferences.KEY_REDUCE_MOTION, false)
+                if (ReceiverPreferences.reduceMotion(this)) {
+                    ReceiverPreferences.prefs(this).edit()
+                        .putBoolean(ReceiverPreferences.KEY_VISUALIZER_ENABLED, false)
+                        .apply()
+                }
+            }
+            "connection_help" -> showConnectionHelp()
             "diagnostics_level" -> cycleValue(
                 ReceiverPreferences.KEY_DIAGNOSTICS_LEVEL,
                 listOf(ReceiverPreferences.DIAGNOSTICS_OFF, ReceiverPreferences.DIAGNOSTICS_BASIC),
@@ -194,6 +312,85 @@ class SettingsActivity : Activity() {
             imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
         }
         dialog.show()
+    }
+
+    private fun cycleAudioSync() {
+        val prefs = ReceiverPreferences.prefs(this)
+        val values = listOf(-500, -250, -100, 0, 100, 250, 500)
+        val current = ReceiverPreferences.audioSyncMs(this)
+        val nextIndex = (values.indexOf(current).takeIf { it >= 0 } ?: 2) + 1
+        prefs.edit()
+            .putInt(ReceiverPreferences.KEY_AUDIO_SYNC_MS, values[nextIndex % values.size])
+            .apply()
+    }
+
+    private fun showConnectionHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Connect with AirPlay")
+            .setMessage(
+                "iPhone or iPad:\n" +
+                    "1. Connect to the same Wi-Fi as this TV.\n" +
+                    "2. Open Control Center.\n" +
+                    "3. Choose Screen Mirroring, then select this TV name.\n\n" +
+                    "Mac:\n" +
+                    "1. Connect to the same network.\n" +
+                    "2. Open Control Center or Displays.\n" +
+                    "3. Choose Screen Mirroring or AirPlay, then select this TV.\n\n" +
+                    "If this TV does not appear, restart discovery here and check that guest Wi-Fi, VPN, or router isolation is not blocking local devices."
+            )
+            .setPositiveButton("Done", null)
+            .show()
+    }
+
+    private fun showNativePairingPending() {
+        AlertDialog.Builder(this)
+            .setTitle("Security mode is planned")
+            .setMessage(
+                "This build keeps discovery on the working no-PIN path and does not reject senders based on this setting. Native AirPlay pairing support is still required before these modes can enforce trust."
+            )
+            .setPositiveButton("Understood", null)
+            .show()
+    }
+
+    private fun showDeviceList(
+        title: String,
+        devices: List<SenderTrustStore.SenderDevice>,
+        emptyMessage: String,
+        removeLabel: String,
+        onRemove: (String) -> Unit,
+        onClear: () -> Unit
+    ) {
+        if (devices.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(emptyMessage)
+                .setPositiveButton("Done", null)
+                .show()
+            return
+        }
+
+        val labels = devices.map { device ->
+            "${device.displayName}\n${device.id}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(labels) { _, which ->
+                val device = devices[which]
+                AlertDialog.Builder(this)
+                    .setTitle("${removeLabel} ${device.displayName}?")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton(removeLabel) { _, _ ->
+                        onRemove(device.id)
+                        rebuildRows()
+                    }
+                    .show()
+            }
+            .setNegativeButton("Done", null)
+            .setPositiveButton("Clear all") { _, _ ->
+                onClear()
+                rebuildRows()
+            }
+            .show()
     }
 
     private fun toggleBoolean(key: String, defaultValue: Boolean) {
