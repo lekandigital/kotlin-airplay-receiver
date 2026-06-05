@@ -102,6 +102,7 @@ class SettingsActivity : Activity() {
                 "Clock screensaver while ready",
                 if (ReceiverPreferences.idleClockEnabled(this)) "Clock" else "Static ready"
             ),
+            SettingsRow.Item("idle_dim", "OLED dimming", "Dim the ready screen after idle time", ReceiverPreferences.idleDimSummary(this)),
             SettingsRow.Item("display", "Display behavior", "Screen behavior while receiving", ReceiverPreferences.wakeModeSummary(this)),
             SettingsRow.Item("after_disconnect", "After disconnect", "What the TV should show after sender disconnects", ReceiverPreferences.afterDisconnectSummary(this)),
             SettingsRow.Item(
@@ -111,16 +112,16 @@ class SettingsActivity : Activity() {
                 if (prefs.getBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)) "On" else "Off"
             ),
             SettingsRow.Section("Security"),
-            SettingsRow.Item("security_mode", "Security mode", "Pairing UI preference; not enforced yet", ReceiverPreferences.securityModeSummary(this)),
+            SettingsRow.Item("security_mode", "Security mode", "Saved preference; AirPlay advertises compatible open mode", ReceiverPreferences.securityModeSummary(this)),
             SettingsRow.Item(
                 "guest_mode",
                 "Guest mode",
-                "Planned preference; does not change sender access yet",
+                "Allow a sender for this session without trusting it",
                 if (ReceiverPreferences.guestMode(this)) "On" else "Off"
             ),
-            SettingsRow.Item("trusted_devices", "Trusted devices", "Stored list only; not enforced yet", "${SenderTrustStore.trustedDevices(this).size} saved"),
-            SettingsRow.Item("blocked_devices", "Blocked devices", "Stored list only; not enforced yet", "${SenderTrustStore.blockedDevices(this).size} saved"),
-            SettingsRow.Item("takeover_protection", "Takeover protection", "Planned sender rule; not enforced yet", ReceiverPreferences.takeoverProtectionSummary(this)),
+            SettingsRow.Item("trusted_devices", "Trusted devices", "Stored trusted sender list", "${SenderTrustStore.trustedDevices(this).size} saved"),
+            SettingsRow.Item("blocked_devices", "Blocked devices", "Stored blocked sender list", "${SenderTrustStore.blockedDevices(this).size} saved"),
+            SettingsRow.Item("takeover_protection", "Takeover protection", "Behavior preference for competing senders", ReceiverPreferences.takeoverProtectionSummary(this)),
             SettingsRow.Item(
                 "takeover",
                 "Bring receiver to front",
@@ -137,7 +138,7 @@ class SettingsActivity : Activity() {
                 if (ReceiverPreferences.frameRateMatching(this)) "On" else "Off"
             ),
             SettingsRow.Section("Audio"),
-            SettingsRow.Item("audio_sync", "Audio sync", "Stored offset; playback hook is pending", ReceiverPreferences.audioSyncSummary(this)),
+            SettingsRow.Item("audio_sync", "Audio sync", "Applied to AirPlay PCM playback", ReceiverPreferences.audioSyncSummary(this)),
             SettingsRow.Item("audio_only", "Audio-only screen", "Apple Music and other audio-only sessions", ReceiverPreferences.audioOnlyDisplaySummary(this)),
             SettingsRow.Item(
                 "visualizer",
@@ -158,6 +159,12 @@ class SettingsActivity : Activity() {
             ),
             SettingsRow.Section("Advanced"),
             SettingsRow.Item("diagnostics_level", "Diagnostics", "Logging detail", ReceiverPreferences.diagnosticsSummary(this)),
+            SettingsRow.Item(
+                "verbose_logging",
+                "Verbose logging",
+                "Detailed native RAOP logs after receiver restart",
+                if (ReceiverPreferences.verboseLogging(this)) "On" else "Off"
+            ),
             SettingsRow.Item("open_diagnostics", "Open diagnostics", "Receiver ID, state history, and session stats", ""),
             SettingsRow.Item("reset_identity", "Reset receiver identity", "Apple devices will see this as a new receiver", ""),
             SettingsRow.Section("About"),
@@ -172,6 +179,7 @@ class SettingsActivity : Activity() {
         when (row.id) {
             "name" -> showNameDialog()
             "idle_clock" -> toggleBoolean(ReceiverPreferences.KEY_IDLE_CLOCK_ENABLED, true)
+            "idle_dim" -> cycleIdleDimming()
             "boot" -> toggleBoolean(ReceiverPreferences.KEY_START_ON_BOOT, true)
             "quality" -> cycleValue(
                 ReceiverPreferences.KEY_QUALITY_PROFILE,
@@ -200,23 +208,23 @@ class SettingsActivity : Activity() {
             "security_mode" -> cycleValue(
                 ReceiverPreferences.KEY_SECURITY_MODE,
                 listOf(
-                    ReceiverPreferences.SECURITY_OPEN,
                     ReceiverPreferences.SECURITY_PIN_NEW_DEVICES,
                     ReceiverPreferences.SECURITY_PIN_EVERY_SESSION,
-                    ReceiverPreferences.SECURITY_TRUSTED_ONLY
+                    ReceiverPreferences.SECURITY_TRUSTED_ONLY,
+                    ReceiverPreferences.SECURITY_OPEN,
                 ),
-                ReceiverPreferences.SECURITY_OPEN
+                ReceiverPreferences.SECURITY_PIN_NEW_DEVICES
             ) {
                 runtime?.refreshDiscovery()
                 if (ReceiverPreferences.securityMode(this) != ReceiverPreferences.SECURITY_OPEN) {
-                    showNativePairingPending()
+                    showNativePairingCompatibilityNotice()
                 }
             }
             "guest_mode" -> toggleBoolean(ReceiverPreferences.KEY_GUEST_MODE, false)
             "trusted_devices" -> showDeviceList(
                 title = "Trusted devices",
                 devices = SenderTrustStore.trustedDevices(this),
-                emptyMessage = "No trusted devices yet. This list is scaffolding until native pairing provides sender identifiers.",
+                emptyMessage = "No trusted devices yet. Native pairing identifiers are needed before the app can populate this automatically.",
                 removeLabel = "Forget",
                 onRemove = { SenderTrustStore.forgetTrustedDevice(this, it) },
                 onClear = { SenderTrustStore.clearTrustedDevices(this) }
@@ -224,7 +232,7 @@ class SettingsActivity : Activity() {
             "blocked_devices" -> showDeviceList(
                 title = "Blocked devices",
                 devices = SenderTrustStore.blockedDevices(this),
-                emptyMessage = "No blocked devices yet. Blocking is not enforced until native pairing exposes sender identifiers.",
+                emptyMessage = "No blocked devices yet. Blocking needs native sender identifiers before it can reject senders.",
                 removeLabel = "Unblock",
                 onRemove = { SenderTrustStore.unblockDevice(this, it) },
                 onClear = { SenderTrustStore.clearBlockedDevices(this) }
@@ -254,6 +262,7 @@ class SettingsActivity : Activity() {
                 listOf(
                     ReceiverPreferences.AUDIO_ONLY_VISUALIZER,
                     ReceiverPreferences.AUDIO_ONLY_STATUS,
+                    ReceiverPreferences.AUDIO_ONLY_VISUALIZER_ONLY,
                     ReceiverPreferences.AUDIO_ONLY_BACKGROUND,
                     ReceiverPreferences.AUDIO_ONLY_MINIMAL
                 ),
@@ -275,6 +284,7 @@ class SettingsActivity : Activity() {
                 listOf(ReceiverPreferences.DIAGNOSTICS_OFF, ReceiverPreferences.DIAGNOSTICS_BASIC),
                 ReceiverPreferences.DIAGNOSTICS_OFF
             )
+            "verbose_logging" -> toggleBoolean(ReceiverPreferences.KEY_VERBOSE_LOGGING, false)
             "open_diagnostics" -> startActivity(Intent(this, DiagnosticsActivity::class.java))
             "restart_discovery" -> {
                 runtime?.refreshDiscovery()
@@ -322,6 +332,16 @@ class SettingsActivity : Activity() {
         prefs.edit()
             .putInt(ReceiverPreferences.KEY_AUDIO_SYNC_MS, values[nextIndex % values.size])
             .apply()
+        runtime?.setAudioSyncMs(values[nextIndex % values.size])
+    }
+
+    private fun cycleIdleDimming() {
+        val values = listOf(0, 5, 10, 20, 30)
+        val current = ReceiverPreferences.idleDimMinutes(this)
+        val nextIndex = (values.indexOf(current).takeIf { it >= 0 } ?: 1) + 1
+        ReceiverPreferences.prefs(this).edit()
+            .putInt(ReceiverPreferences.KEY_IDLE_DIM_MINUTES, values[nextIndex % values.size])
+            .apply()
     }
 
     private fun showConnectionHelp() {
@@ -342,11 +362,11 @@ class SettingsActivity : Activity() {
             .show()
     }
 
-    private fun showNativePairingPending() {
+    private fun showNativePairingCompatibilityNotice() {
         AlertDialog.Builder(this)
-            .setTitle("Security mode is planned")
+            .setTitle("Security compatibility")
             .setMessage(
-                "This build keeps discovery on the working no-PIN path and does not reject senders based on this setting. Native AirPlay pairing support is still required before these modes can enforce trust."
+                "This setting is saved and shown in the TV UI. The receiver still advertises the compatible no-PIN AirPlay path until native PIN verification and stable sender identifiers are available."
             )
             .setPositiveButton("Understood", null)
             .show()

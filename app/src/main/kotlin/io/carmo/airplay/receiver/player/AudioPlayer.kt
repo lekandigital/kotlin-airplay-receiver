@@ -19,7 +19,8 @@ class AudioPlayer(
     initialVolume: Float = DEFAULT_VOLUME,
     private val onLatencySample: (Long) -> Unit = {},
     private val onAudioUnderrun: () -> Unit = {},
-    audioStableMode: Boolean = false
+    audioStableMode: Boolean = false,
+    initialAudioSyncMs: Int = 0
 ) : Thread("ReceiverAudioPlayer") {
 
     private val appContext = context.applicationContext
@@ -40,6 +41,10 @@ class AudioPlayer(
     private var lastDropLogAtMs = 0L
     private var lastUnderrunLogAtMs = 0L
     private var lastShortWriteLogAtMs = 0L
+    private var lastAudioPacketWrittenAtMs = 0L
+    @Volatile private var audioSyncMs = initialAudioSyncMs.coerceIn(MIN_AUDIO_SYNC_MS, MAX_AUDIO_SYNC_MS)
+    private var pendingInitialSilenceBytes = syncMsToBytes(audioSyncMs.coerceAtLeast(0))
+    private var pendingInitialDropBytes = syncMsToBytes((-audioSyncMs).coerceAtLeast(0))
 
     fun addPacket(packet: PCMPacket) {
         val trimmed = trimBacklog()
@@ -63,6 +68,13 @@ class AudioPlayer(
         }
     }
 
+    fun setAudioSyncMs(syncMs: Int) {
+        val coerced = syncMs.coerceIn(MIN_AUDIO_SYNC_MS, MAX_AUDIO_SYNC_MS)
+        if (coerced == audioSyncMs) return
+        audioSyncMs = coerced
+        flushPlayback()
+    }
+
     fun flushPlayback() {
         drainPackets()
         droppedPackets = 0L
@@ -84,6 +96,8 @@ class AudioPlayer(
             }
             hasStartedPlayback = false
             hasLoggedFirstWrite = false
+            lastAudioPacketWrittenAtMs = 0L
+            resetSyncStateLocked()
         }
         Log.i(TAG, "AudioTrack flushed")
     }
@@ -187,7 +201,11 @@ class AudioPlayer(
 
     private fun play(packet: PCMPacket) {
         try {
-            packet.data.position(0)
+            val writeOffset = consumeInitialDrop(packet.size)
+            if (writeOffset >= packet.size) {
+                return
+            }
+            packet.data.position(writeOffset)
             packet.data.limit(packet.size)
             val written = synchronized(playbackLock) {
                 val audioTrack = track ?: return
@@ -195,23 +213,65 @@ class AudioPlayer(
                 if (!hasStartedPlayback) {
                     audioTrack.play()
                     hasStartedPlayback = true
+                    writeInitialSilenceLocked(audioTrack)
                 }
-                audioTrack.write(packet.data, packet.size, AudioTrack.WRITE_BLOCKING)
+                audioTrack.write(packet.data, packet.size - writeOffset, AudioTrack.WRITE_BLOCKING)
             }
             if (written < 0) {
                 Log.w(TAG, "AudioTrack write failed with code $written")
-            } else if (written != packet.size) {
-                handleShortWrite(written, packet.size)
+            } else if (written != packet.size - writeOffset) {
+                handleShortWrite(written, packet.size - writeOffset)
             } else {
                 if (!hasLoggedFirstWrite) {
                     hasLoggedFirstWrite = true
-                    Log.i(TAG, "first audio packet written: size=$written, volume=$volume, queued=${packets.size}")
+                    Log.i(
+                        TAG,
+                        "first audio packet written: size=$written, volume=$volume, " +
+                            "sync=${audioSyncMs}ms, queued=${packets.size}"
+                    )
                 }
+                lastAudioPacketWrittenAtMs = SystemClock.elapsedRealtime()
                 onLatencySample(SystemClock.elapsedRealtime() - packet.receivedAtMs)
             }
         } finally {
             packet.release()
         }
+    }
+
+    private fun consumeInitialDrop(packetSize: Int): Int {
+        val pending = pendingInitialDropBytes
+        if (pending <= 0) {
+            return 0
+        }
+        val drop = pending.coerceAtMost(packetSize)
+        pendingInitialDropBytes -= drop
+        if (pendingInitialDropBytes == 0) {
+            Log.i(TAG, "audio sync advanced by dropping ${bytesToMs(drop)}ms of initial PCM")
+        }
+        return drop
+    }
+
+    private fun writeInitialSilenceLocked(audioTrack: AudioTrack) {
+        var remaining = pendingInitialSilenceBytes
+        if (remaining <= 0) return
+        val silence = ByteArray(SILENCE_CHUNK_BYTES)
+        while (remaining > 0 && !isStopped) {
+            val chunk = remaining.coerceAtMost(silence.size)
+            val written = audioTrack.write(silence, 0, chunk)
+            if (written <= 0) {
+                break
+            }
+            remaining -= written
+        }
+        pendingInitialSilenceBytes = remaining
+        if (remaining == 0) {
+            Log.i(TAG, "audio sync delayed by ${audioSyncMs}ms of initial silence")
+        }
+    }
+
+    private fun resetSyncStateLocked() {
+        pendingInitialSilenceBytes = syncMsToBytes(audioSyncMs.coerceAtLeast(0))
+        pendingInitialDropBytes = syncMsToBytes((-audioSyncMs).coerceAtLeast(0))
     }
 
     private fun handleShortWrite(written: Int, expected: Int) {
@@ -296,6 +356,11 @@ class AudioPlayer(
         return packetCount * RAOP_PACKET_BYTES / BYTES_PER_FRAME * 1_000 / SAMPLE_RATE
     }
 
+    private fun syncMsToBytes(syncMs: Int): Int {
+        val frames = SAMPLE_RATE * syncMs / 1_000
+        return frames * BYTES_PER_FRAME
+    }
+
     private fun logDroppedPackets(count: Int) {
         droppedPackets += count.toLong()
         val now = SystemClock.elapsedRealtime()
@@ -306,8 +371,11 @@ class AudioPlayer(
     }
 
     private fun logUnderrun() {
-        onAudioUnderrun()
         val now = SystemClock.elapsedRealtime()
+        if (lastAudioPacketWrittenAtMs == 0L || now - lastAudioPacketWrittenAtMs > RECENT_AUDIO_PACKET_WINDOW_MS) {
+            return
+        }
+        onAudioUnderrun()
         if (now - lastUnderrunLogAtMs >= AUDIO_LOG_INTERVAL_MS) {
             lastUnderrunLogAtMs = now
             Log.w(TAG, "audio underrun: queue empty after playback started")
@@ -328,10 +396,14 @@ class AudioPlayer(
         private const val PREBUFFER_WAIT_MS = 10L
         private const val AUDIO_BUFFER_MULTIPLIER = 8
         private const val AUDIO_LOG_INTERVAL_MS = 5_000L
+        private const val RECENT_AUDIO_PACKET_WINDOW_MS = 2_000L
+        private const val MIN_AUDIO_SYNC_MS = -500
+        private const val MAX_AUDIO_SYNC_MS = 500
         private const val SAMPLE_RATE = 44100
         private const val CHANNELS = AudioFormat.CHANNEL_OUT_STEREO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BYTES_PER_FRAME = 4
         private const val RAOP_PACKET_BYTES = 1920
+        private const val SILENCE_CHUNK_BYTES = 4096
     }
 }

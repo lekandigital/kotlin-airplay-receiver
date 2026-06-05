@@ -1,108 +1,127 @@
 # AirPlay Receiver
 
-![Icon](docs/icon-256.png)
+AirPlay Receiver turns an Android TV or Google TV device into a local AirPlay target for screen mirroring and audio playback. It is built for a TV remote first: D-pad focus, couch-distance text, landscape-only screens, foreground-service reliability, and honest compatibility limits.
 
-AirPlay Receiver is an Android TV / Google TV app that makes a TV discoverable as an AirPlay and RAOP receiver on the local network. It is designed for D-pad remotes, leanback launchers, and couch-distance readability.
+The existing native RAOP, mirroring, FairPlay, AAC/ALAC, and H.264 stack is preserved. The Android layer wraps it with TV-native onboarding, discovery, ready-state UI, quick controls, diagnostics, audio-only playback, and release packaging.
 
-The native RAOP, mirroring, FairPlay, AAC, and H.264 stack is preserved. The Kotlin layer focuses on TV app behavior: foreground-service lifetime, discovery, the ready screen, playback surface management, settings, diagnostics, and user-facing controls.
+## Screenshots
 
-## What It Does
+| Ready screen | Quick settings | Main settings |
+| --- | --- | --- |
+| ![Ready screen showing AirPlay Receiver ready on Bedroom TV](docs/screenshots/ready-screen.png) | ![Quick settings with quality, fit, sync, route, and security controls](docs/screenshots/quick-settings.png) | ![Main settings list organized for Android TV remote use](docs/screenshots/main-settings.png) |
 
-- Advertises the TV on the local network as an AirPlay / RAOP target.
-- Receives H.264 screen mirroring and renders it to a `SurfaceView`.
-- Receives AirPlay audio, decodes AAC in the native stack, and plays PCM through `AudioTrack`.
-- Keeps the TV discoverable after disconnect by returning to the ready screen by default.
-- Provides remote-first settings for receiver name, quality profile, screen fit, audio sync, display behavior, security mode, discovery restart, diagnostics, and receiver identity reset.
-- Shows a first-run setup flow for receiver name, security mode, quality profile, and connection instructions.
-- Shows a dedicated audio-only screen with metadata placeholders and an optional low-cost spectrum visualizer.
+Screenshots were captured from a Chromecast with Google TV running the release APK.
 
-## Target Devices
+## AirPlay In Action
 
-This app targets Android TV and Google TV devices such as NVIDIA Shield, Chromecast with Google TV, and TV sets running Android TV / Google TV.
+| Portrait mirroring | Landscape mirroring |
+| --- | --- |
+| ![Portrait iPhone screen mirrored to Android TV through AirPlay Receiver](docs/screenshots/airplay-portrait.png) | ![Landscape iPhone screen mirrored to Android TV through AirPlay Receiver](docs/screenshots/airplay-landscape.png) |
 
-- Leanback launcher support is required in the manifest.
-- Pointer input is not required for the primary interaction model.
-- All core controls are reachable with D-pad, Select, Back, Home, and the remote volume keys.
-- The app is landscape-only.
+The receiver adapts to the sender orientation and preserves the source aspect ratio instead of stretching phone content to fill the TV.
+
+## Highlights
+
+- Android TV / Google TV positioning with Leanback launcher support and landscape-only activities.
+- D-pad ready screen with clock, receiver name, quick settings, full settings, and connection help.
+- First-run setup for receiver name, security preference, quality profile, and connection instructions.
+- H.264 mirroring to `SurfaceView` with startup buffering, SPS/PPS replay, frame-rate hints, and stall recovery.
+- AirPlay audio playback through `AudioTrack`, including AAC/ALAC handling, metadata, cover art, MediaSession updates, and audio-only UI.
+- Quick controls for quality, screen fit, audio sync, audio route, security mode, and discovery restart.
+- Main settings for receiver behavior, security, display, audio, network help, accessibility, diagnostics, and identity reset.
+- Diagnostics with state history, network/discovery status, session stats, suggestions, clipboard copy, and file export.
+- Release posture for Play TV: targetSdk 34, App Bundle output, 64-bit native libraries, and 16 KB page-size linker alignment.
+
+## Using It
+
+1. Install and open the app on an Android TV or Google TV device.
+2. Choose a receiver name and starting quality profile during first-run setup.
+3. Keep the app on the ready screen.
+4. On iPhone or iPad, open Control Center, choose Screen Mirroring, and select the TV name.
+5. On Mac, use Control Center or Displays, then choose the TV name.
+
+The receiver returns to the ready screen after disconnect by default and remains discoverable while the foreground service is running.
 
 ## Runtime Controls
 
-The ready screen shows a burn-in-conscious clock, receiver name, `Ready to AirPlay`, a short connection hint, the current quality profile, and the security mode. It does not show IP addresses, receiver IDs, sender history, or other diagnostics by default.
+The ready screen intentionally hides IP addresses, receiver IDs, and sender history. It shows only the clock, receiver name, status, connection hint, quality profile, and security mode.
 
-Press Select on the ready screen to open settings. The ready screen also has explicit Settings and Help buttons for D-pad focus.
+Use the remote:
 
-During video playback, press Select to show the playback overlay. The overlay includes the receiver name, resolution, quality profile, screen fit, audio route, runtime state, and quick actions:
+- Select on `Settings` opens the full settings screen.
+- Select on `Quick` opens the quick settings overlay.
+- Select on `Help` opens connection instructions.
+- Select during video playback opens the playback overlay.
+- Back hides the current overlay or returns from playback to ready.
+- Remote volume keys control Android media volume.
 
-- Stop: disconnect the current stream and return to ready.
-- Screen fit: cycle Fit, Fill, and Stretch.
-- Diagnostics: open the diagnostics screen.
-- Traffic: show or hide the diagnostic traffic monitor.
-
-Volume uses the Android media volume keys on the remote. Diagnostic controls live in the playback overlay.
+The playback overlay includes Stop, Screen Fit, Audio Sync, Settings, Diagnostics, and Traffic actions.
 
 ## Quality Profiles
 
-Quality profiles map onto the existing advertised stream-size plumbing:
+- Auto: choose a practical display size from the TV capabilities.
+- Low Latency: 720p with conservative latency.
+- Balanced: 1080p with moderate buffering.
+- Best Quality: 1080p for the cleanest source stream.
+- Compatibility: 720p for older or problematic senders.
+- Audio Stable: 720p with audio-focused buffering.
 
-- Auto: detect the display and choose 720p or 1080p.
-- Low Latency: advertise 720p and keep latency conservative.
-- Balanced: advertise 1080p with moderate defaults.
-- Best Quality: advertise 1080p for the cleanest source stream.
-- Compatibility: advertise 720p for older or problematic senders.
-- Audio Stable: advertise 720p and prioritize audio robustness.
-
-Frame-rate matching is exposed as a setting and applies an API 30+ `Surface.setFrameRate()` hint when enabled. The current media path uses a 60 fps fixed-source hint until sender frame-rate detection is added.
+Frame-rate matching uses `Surface.setFrameRate()` on API 30+ when enabled, with 60 fps as the fallback when sender cadence cannot be detected.
 
 ## Security Modes
 
-The settings screen includes these security modes:
+The UI exposes four security preferences:
 
-- Open - no pairing required. This is the currently enforced behavior.
-- PIN for new devices. Planned future default once native PIN verification is implemented.
-- PIN every session. Planned.
-- Trusted devices only. Planned.
+- PIN for new devices.
+- PIN every session.
+- Trusted devices only.
+- Open - no pairing required.
 
-PIN and trusted-only modes are UI scaffolding until the native stack can enforce AirPlay pairing. Discovery intentionally remains compatible with the working receiver path (`pw=false`) until native PIN verification and stable sender identifiers are implemented.
-
-Trusted devices, blocked devices, guest mode, and takeover protection are represented in the settings model. Trust and block lists are persisted and manageable, but they are not enforced until native pairing identifiers are available.
+Important: current discovery remains on the compatible `pw=false` AirPlay path. The PIN screen is a compatibility placeholder, and native Apple PIN verification is not cryptographically enforced yet. The existing native gate can reject blocked, untrusted, or takeover senders where a sender identifier is available, but true AirPlay PIN enforcement still requires a native password-authenticated pairing implementation.
 
 ## Known Limits
 
-This project does not claim universal AirPlay compatibility. AirPlay behavior depends on sender device, app, OS version, network configuration, and the native protocol stack.
-
-Known practical limits:
-
 - DRM-protected or app-restricted streams may not play.
-- Some senders may negotiate protocol features this receiver does not yet implement.
+- Some sender OS/app combinations may negotiate protocol features this receiver does not implement.
 - Guest Wi-Fi, VPNs, multicast filtering, and client isolation can prevent discovery.
-- PIN pairing UI is scaffolded, but native PIN verification is still required for real enforcement.
-- Metadata and album art for audio-only playback depend on native metadata forwarding; the current TV screen shows generic AirPlay audio metadata.
+- Metadata and album art depend on the sender forwarding AirPlay/DMAP metadata.
+- Route-specific audio sync is still future work because Android TV audio-route identity is inconsistent across devices.
 
-## Build And Release
+## Build
 
-The app builds as a Kotlin Android application with a native C/C++ stack through CMake and the Android NDK.
+Use Java 17 with the Android SDK installed:
 
-Current release posture:
+```bash
+JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home" \
+ANDROID_HOME="$HOME/Library/Android/sdk" \
+./gradlew --no-daemon test assembleRelease bundleRelease
+```
 
-- Minimum SDK: Android 8.1 / API 27.
-- Target SDK: API 34.
-- ABI: `arm64-v8a` and `armeabi-v7a`.
-- The AAB includes 64-bit native libraries for Play compliance while retaining 32-bit output for Android TV devices that still ship a 32-bit userspace.
-- Compose is enabled for the onboarding flow with a conservative AndroidX TV foundation dependency; the playback and settings screens remain on the existing View/XML path for now.
-- Native shared libraries are linked with `-Wl,-z,max-page-size=16384` for 16 KB page-size readiness.
-- Android App Bundle output is supported through Gradle's `bundleRelease` task.
-- APK output remains available through `assembleRelease` for local testing and sideloading.
+Outputs:
+
+- APK: `app/build/outputs/apk/release/app-release.apk`
+- AAB: `app/build/outputs/bundle/release/app-release.aab`
 
 Release signing reads `signing.properties` when present and falls back to debug signing for local ad hoc builds. Do not commit keystores or signing secrets.
 
+## Release Posture
+
+- Minimum SDK: Android 8.1 / API 27.
+- Target SDK: API 34.
+- ABIs: `arm64-v8a`, `armeabi-v7a`.
+- Leanback required: yes.
+- Touchscreen required: no.
+- Native shared libraries use `-Wl,-z,max-page-size=16384`.
+- Android App Bundle split output is enabled for Play release builds.
+
 ## Project Layout
 
-- `app/src/main/kotlin/io/carmo/airplay/receiver/` contains the Kotlin application code.
-- `app/src/main/java/com/apple/dnssd/` contains legacy Java DNS-SD compatibility bindings.
-- `app/src/main/cpp/` contains the native AirPlay, RAOP, mirroring, AAC, crypto, and JNI code.
-- `docs/architecture.md` documents runtime architecture and data flow.
-- `docs/performance.md` documents Android TV performance assumptions and tuning decisions.
-- `docs/vendor-audit.md` documents retained vendored code and license notes.
+- `app/src/main/kotlin/io/carmo/airplay/receiver/`: Kotlin app, runtime, UI, settings, diagnostics.
+- `app/src/main/java/com/apple/dnssd/`: legacy Java DNS-SD compatibility bindings.
+- `app/src/main/cpp/`: native AirPlay, RAOP, mirroring, codec, crypto, and JNI code.
+- `docs/architecture.md`: runtime architecture and data flow.
+- `docs/performance.md`: Android TV performance assumptions and tuning notes.
+- `docs/vendor-audit.md`: retained vendored code and license notes.
 
 ## License
 

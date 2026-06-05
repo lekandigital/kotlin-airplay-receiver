@@ -50,7 +50,9 @@ class OnboardingActivity : ComponentActivity() {
 
         val initialName = ReceiverPreferences.customDeviceName(this)
             ?: DNSNotify.suggestedDeviceName(this)
-        val initialSecurityMode = ReceiverPreferences.securityMode(this)
+        val initialSecurityMode = ReceiverPreferences.prefs(this)
+            .getString(ReceiverPreferences.KEY_SECURITY_MODE, ReceiverPreferences.SECURITY_PIN_NEW_DEVICES)
+            ?: ReceiverPreferences.SECURITY_PIN_NEW_DEVICES
         val initialQualityProfile = ReceiverPreferences.qualityProfile(this)
 
         setContent {
@@ -191,31 +193,30 @@ private fun NameStep(receiverName: String, onNameChanged: (String) -> Unit) {
 @Composable
 private fun SecurityStep(selected: String, onSelected: (String) -> Unit) {
     BodyText(
-        "Choose the current access behavior or a planned security preference. " +
-            "PIN and trusted-only modes need native AirPlay pairing before they can be enforced."
+        "Choose the access behavior. PIN modes are saved now; AirPlay still uses the compatible open advertisement until native PIN verification is wired."
     )
     Spacer(modifier = Modifier.height(24.dp))
     OptionList(
         options = listOf(
+            Option(
+                ReceiverPreferences.SECURITY_PIN_NEW_DEVICES,
+                "PIN for new devices",
+                "Recommended. Saved now; native verification is still required for enforcement."
+            ),
+            Option(
+                ReceiverPreferences.SECURITY_PIN_EVERY_SESSION,
+                "PIN every session",
+                "Saved now; this build keeps the compatible no-PIN transport."
+            ),
             Option(
                 ReceiverPreferences.SECURITY_OPEN,
                 "Open - no pairing required",
                 "Current enforced behavior on the local network."
             ),
             Option(
-                ReceiverPreferences.SECURITY_PIN_NEW_DEVICES,
-                "PIN for new devices (planned)",
-                "Visible preference only until native pairing is wired."
-            ),
-            Option(
-                ReceiverPreferences.SECURITY_PIN_EVERY_SESSION,
-                "PIN every session (planned)",
-                "This build does not require codes yet."
-            ),
-            Option(
                 ReceiverPreferences.SECURITY_TRUSTED_ONLY,
-                "Trusted devices only (planned)",
-                "This build does not reject new senders yet."
+                "Trusted devices only",
+                "Saved now; sender rejection needs native pairing identifiers."
             )
         ),
         selected = selected,

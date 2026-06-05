@@ -21,8 +21,11 @@ class RaopServer(
     private val onTrafficSample: (Int) -> Unit,
     private val onLatencySample: (Long) -> Unit,
     private val onVideoSizeChanged: (Int, Int) -> Unit,
+    private val onFrameRateChanged: (Float) -> Unit,
     private val onStreamStatusChanged: (String) -> Unit,
     private val onStateChanged: (ReceiverState) -> Unit,
+    private val onAudioMetadataChanged: (AirPlayMetadata) -> Unit,
+    private val onAudioCoverArtChanged: (ByteArray) -> Unit,
     initialVideoWidth: Int,
     initialVideoHeight: Int,
     initialAudioVolume: Float
@@ -40,11 +43,16 @@ class RaopServer(
     @Volatile private var sessionStartedAtMs = 0L
     @Volatile private var videoWidth = initialVideoWidth
     @Volatile private var videoHeight = initialVideoHeight
+    @Volatile private var estimatedFrameRate = DEFAULT_FRAME_RATE
     @Volatile private var fallbackAudioVolume = initialAudioVolume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
     @Volatile private var audioVolume = fallbackAudioVolume
+    @Volatile private var audioSyncMs = ReceiverPreferences.audioSyncMs(context)
     @Volatile private var hasConnection = false
     @Volatile private var hasStartedVideo = false
     @Volatile private var hasSessionVolume = false
+    @Volatile private var activeSenderId: String? = null
+    @Volatile private var pendingPairingSenderId: String? = null
+    @Volatile private var pendingPairingSenderName: String? = null
     @Volatile private var currentState = ReceiverState.IDLE_ADVERTISING
 
     /**
@@ -64,6 +72,10 @@ class RaopServer(
     @Volatile private var maxPreSurfacePacketsBuffered = 0
     @Volatile private var lastSessionStats = ReceiverSessionStats()
     private var renderWatchdogFrameCount = 0
+    private var lastVideoPtsUs = 0L
+    private var frameIntervalEstimateUs = 0.0
+    private var frameRateSampleCount = 0
+    private var lastFrameRateReportAtMs = 0L
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
@@ -74,6 +86,7 @@ class RaopServer(
         markMediaTraffic()
         val now = SystemClock.elapsedRealtime()
         lastVideoPacketAtMs = now
+        updateFrameRateEstimate(pts)
         if (firstVideoBytesAtMs == 0L) {
             firstVideoBytesAtMs = now
             scheduleStartupWatchdog()
@@ -209,6 +222,11 @@ class RaopServer(
         audioPlayer?.setVolume(audioVolume)
     }
 
+    fun setAudioSyncMs(syncMs: Int) {
+        audioSyncMs = syncMs.coerceIn(ReceiverPreferences.MIN_AUDIO_SYNC_MS, ReceiverPreferences.MAX_AUDIO_SYNC_MS)
+        audioPlayer?.setAudioSyncMs(audioSyncMs)
+    }
+
     fun sessionStats(): ReceiverSessionStats {
         return if (sessionStartedAtMs != 0L || hasConnection) {
             currentSessionStats()
@@ -235,11 +253,117 @@ class RaopServer(
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
+    fun onAudioMetadata(data: ByteArray) {
+        val metadata = AirPlayMetadataParser.parse(data)
+        if (metadata.hasTrackText) {
+            onAudioMetadataChanged(metadata)
+            val title = metadata.title ?: metadata.artist ?: "Audio metadata received"
+            onStreamStatusChanged(title)
+            Log.i(TAG, "audio metadata: title=${metadata.title}, artist=${metadata.artist}, album=${metadata.album}")
+        }
+    }
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
+    fun onAudioCoverArt(data: ByteArray) {
+        if (data.isNotEmpty()) {
+            onAudioCoverArtChanged(data)
+            Log.i(TAG, "audio cover art received: ${data.size} bytes")
+        }
+    }
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
+    fun onAudioRemoteControlId(dacpId: String?, activeRemote: String?) {
+        val senderId = activeRemote?.takeIf { it.isNotBlank() } ?: dacpId?.takeIf { it.isNotBlank() }
+        if (senderId != null) {
+            onAudioMetadataChanged(AirPlayMetadata(senderId = senderId, senderName = "AirPlay sender"))
+            Log.i(TAG, "audio sender id received: $senderId")
+        }
+    }
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
+    fun onAudioProgress(start: Long, current: Long, end: Long) {
+        onAudioMetadataChanged(
+            AirPlayMetadata(
+                progressStartMs = rtpTimeToMs(start),
+                progressCurrentMs = rtpTimeToMs(current),
+                progressEndMs = rtpTimeToMs(end)
+            )
+        )
+    }
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
+    fun shouldAcceptSender(senderId: String?, senderName: String?): Boolean {
+        val sanitizedId = senderId?.trim()?.takeIf { it.isNotBlank() } ?: return true
+        val displayName = senderName?.trim()?.takeIf { it.isNotBlank() } ?: sanitizedId
+        val blocked = SenderTrustStore.blockedDevices(context).any { it.id == sanitizedId }
+        if (blocked) {
+            onStreamStatusChanged("Blocked sender rejected")
+            Log.w(TAG, "rejecting blocked sender $sanitizedId")
+            return false
+        }
+
+        val currentSender = activeSenderId
+        val hasActiveSession = hasConnection || currentState in ACTIVE_STATES
+        if (hasActiveSession && currentSender != null && currentSender != sanitizedId) {
+            return when (ReceiverPreferences.takeoverProtection(context)) {
+                ReceiverPreferences.TAKEOVER_ALLOW -> {
+                    Log.i(TAG, "takeover allowed: $currentSender -> $sanitizedId")
+                    activeSenderId = sanitizedId
+                    true
+                }
+                else -> {
+                    onStreamStatusChanged("Sender rejected while another session is active")
+                    Log.w(TAG, "rejecting sender $sanitizedId while $currentSender is active")
+                    false
+                }
+            }
+        }
+
+        val trusted = SenderTrustStore.trustedDevices(context).any { it.id == sanitizedId }
+        if (!trusted && ReceiverPreferences.securityMode(context) == ReceiverPreferences.SECURITY_TRUSTED_ONLY &&
+            !ReceiverPreferences.guestMode(context)
+        ) {
+            onStreamStatusChanged("Untrusted sender rejected")
+            Log.w(TAG, "rejecting untrusted sender $sanitizedId")
+            return false
+        }
+
+        activeSenderId = sanitizedId
+        onAudioMetadataChanged(AirPlayMetadata(senderId = sanitizedId, senderName = displayName))
+        if (securityModeUsesPinPlaceholder(trusted)) {
+            pendingPairingSenderId = sanitizedId
+            pendingPairingSenderName = displayName
+        }
+        return true
+    }
+
+    fun hasPendingPairingSender(): Boolean = pendingPairingSenderId != null
+
+    fun markPendingPairingAccepted() {
+        val senderId = pendingPairingSenderId ?: return
+        val senderName = pendingPairingSenderName ?: senderId
+        if (!ReceiverPreferences.guestMode(context)) {
+            SenderTrustStore.trustDevice(context, senderId, senderName)
+        }
+        pendingPairingSenderId = null
+        pendingPairingSenderName = null
+    }
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
     fun getVideoWidth(): Int = videoWidth
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
     fun getVideoHeight(): Int = videoHeight
+
+    @Suppress("unused")
+    @SuppressLint("AnnotateVersionCheck")
+    fun isVerboseLoggingEnabled(): Boolean = ReceiverPreferences.verboseLogging(context)
 
     @Suppress("unused")
     @SuppressLint("AnnotateVersionCheck")
@@ -280,7 +404,8 @@ class RaopServer(
             audioVolume,
             onLatencySample,
             ::handleAudioUnderrun,
-            audioStableMode = ReceiverPreferences.qualityProfile(context) == ReceiverPreferences.QUALITY_AUDIO_STABLE
+            audioStableMode = ReceiverPreferences.qualityProfile(context) == ReceiverPreferences.QUALITY_AUDIO_STABLE,
+            initialAudioSyncMs = audioSyncMs
         )
             .also {
                 audioPlayer = it
@@ -316,11 +441,18 @@ class RaopServer(
         hasConnection = false
         hasStartedVideo = false
         hasSessionVolume = false
+        activeSenderId = null
+        pendingPairingSenderId = null
+        pendingPairingSenderName = null
         audioVolume = fallbackAudioVolume
         firstVideoBytesAtMs = 0L
         firstAudioBytesAtMs = 0L
         lastVideoStatusAtMs = 0L
         lastNoSurfaceVideoLogAtMs = 0L
+        lastVideoPtsUs = 0L
+        frameIntervalEstimateUs = 0.0
+        frameRateSampleCount = 0
+        estimatedFrameRate = DEFAULT_FRAME_RATE
     }
 
     private fun bufferPreSurfacePacket(packet: NALPacket) {
@@ -388,7 +520,8 @@ class RaopServer(
             ::handleVideoFrameRendered,
             onVideoSizeChanged,
             enableFrameRateHint = ReceiverPreferences.frameRateMatching(context) &&
-                ReceiverPreferences.qualityProfile(context) != ReceiverPreferences.QUALITY_LOW_LATENCY
+                ReceiverPreferences.qualityProfile(context) != ReceiverPreferences.QUALITY_LOW_LATENCY,
+            sourceFrameRate = estimatedFrameRate
         )
         videoPlayer = newPlayer
         onStreamStatusChanged("Decoder starting")
@@ -433,12 +566,16 @@ class RaopServer(
     private val renderWatchdog = object : Runnable {
         override fun run() {
             if (!hasStartedVideo || currentState == ReceiverState.STOPPING_SESSION) return
+            val now = SystemClock.elapsedRealtime()
             val currentCount = renderedFrameCount
-            val packetAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
-            val renderAgeMs = SystemClock.elapsedRealtime() - lastRenderedFrameCountAtMs
+            val packetAgeMs = now - lastVideoPacketAtMs
+            val renderAgeMs = now - lastRenderedFrameCountAtMs
 
-            if (currentCount == renderWatchdogFrameCount && packetAgeMs < STALL_TRAFFIC_MAX_AGE_MS) {
-                Log.w(TAG, "render watchdog: decoder stalled (renderAge=${renderAgeMs}ms, packets active)")
+            if (currentCount == renderWatchdogFrameCount &&
+                packetAgeMs < STALL_VIDEO_TRAFFIC_MAX_AGE_MS &&
+                renderAgeMs >= RENDER_STALL_MIN_AGE_MS
+            ) {
+                Log.w(TAG, "render watchdog: decoder stalled (renderAge=${renderAgeMs}ms, video packets active)")
                 emitState(ReceiverState.VIDEO_STALLED)
                 onStreamStatusChanged("Recovering video")
                 restartVideoDecoderOnly()
@@ -477,11 +614,11 @@ class RaopServer(
         if (hasStartedVideo) {
             return@Runnable
         }
-        val trafficAgeMs = SystemClock.elapsedRealtime() - lastMediaPacketAtMs
-        if (lastMediaPacketAtMs == 0L || trafficAgeMs > STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS) {
+        val trafficAgeMs = SystemClock.elapsedRealtime() - lastVideoPacketAtMs
+        if (lastVideoPacketAtMs == 0L || trafficAgeMs > STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS) {
             return@Runnable
         }
-        Log.w(TAG, "startup watchdog fired: ${STARTUP_WATCHDOG_MS}ms with traffic, no rendered frame")
+        Log.w(TAG, "startup watchdog fired: ${STARTUP_WATCHDOG_MS}ms with video traffic, no rendered frame")
         onStreamStatusChanged("Decoder starting (retry)")
         emitState(ReceiverState.VIDEO_STALLED)
         restartVideoDecoderOnly()
@@ -505,6 +642,51 @@ class RaopServer(
 
     private fun handleAudioUnderrun() {
         audioUnderrunCount++
+    }
+
+    private fun updateFrameRateEstimate(ptsUs: Long) {
+        if (ptsUs <= 0L) return
+        val lastPts = lastVideoPtsUs
+        lastVideoPtsUs = ptsUs
+        if (lastPts <= 0L || ptsUs <= lastPts) return
+        val deltaUs = ptsUs - lastPts
+        if (deltaUs !in MIN_FRAME_INTERVAL_US..MAX_FRAME_INTERVAL_US) return
+
+        frameIntervalEstimateUs = if (frameIntervalEstimateUs == 0.0) {
+            deltaUs.toDouble()
+        } else {
+            frameIntervalEstimateUs * 0.85 + deltaUs.toDouble() * 0.15
+        }
+        frameRateSampleCount++
+        if (frameRateSampleCount < FRAME_RATE_MIN_SAMPLES) return
+
+        val estimate = (1_000_000.0 / frameIntervalEstimateUs).toFloat()
+        val snapped = snapFrameRate(estimate)
+        if (kotlin.math.abs(snapped - estimatedFrameRate) < 0.5f) return
+
+        estimatedFrameRate = snapped
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastFrameRateReportAtMs >= FRAME_RATE_REPORT_INTERVAL_MS) {
+            lastFrameRateReportAtMs = now
+            Log.i(TAG, "detected video frame rate: ${snapped}fps")
+            onFrameRateChanged(snapped)
+        }
+    }
+
+    private fun snapFrameRate(frameRate: Float): Float {
+        return COMMON_FRAME_RATES.minByOrNull { kotlin.math.abs(it - frameRate) } ?: DEFAULT_FRAME_RATE
+    }
+
+    private fun rtpTimeToMs(value: Long): Long {
+        return if (value <= 0L) 0L else value * 1_000L / AUDIO_RTP_CLOCK_HZ
+    }
+
+    private fun securityModeUsesPinPlaceholder(senderTrusted: Boolean): Boolean {
+        return when (ReceiverPreferences.securityMode(context)) {
+            ReceiverPreferences.SECURITY_PIN_EVERY_SESSION -> true
+            ReceiverPreferences.SECURITY_PIN_NEW_DEVICES -> !senderTrusted
+            else -> false
+        }
     }
 
     private fun markVideoActivity() {
@@ -559,8 +741,24 @@ class RaopServer(
         private const val STARTUP_WATCHDOG_MS = 6_000L
         private const val STARTUP_WATCHDOG_TRAFFIC_MAX_AGE_MS = 2_000L
         private const val RENDER_WATCHDOG_INTERVAL_MS = 4_000L
-        private const val STALL_TRAFFIC_MAX_AGE_MS = 3_000L
+        private const val RENDER_STALL_MIN_AGE_MS = 300_000L
+        private const val STALL_VIDEO_TRAFFIC_MAX_AGE_MS = 3_000L
         private const val NAL_TYPE_CODEC_CONFIG = 0
+        private const val DEFAULT_FRAME_RATE = 60.0f
+        private const val MIN_FRAME_INTERVAL_US = 8_000L
+        private const val MAX_FRAME_INTERVAL_US = 50_000L
+        private const val FRAME_RATE_MIN_SAMPLES = 8
+        private const val FRAME_RATE_REPORT_INTERVAL_MS = 3_000L
+        private const val AUDIO_RTP_CLOCK_HZ = 44_100L
+        private val COMMON_FRAME_RATES = listOf(24.0f, 25.0f, 30.0f, 50.0f, 60.0f)
+        private val ACTIVE_STATES = setOf(
+            ReceiverState.AUDIO_ACTIVE,
+            ReceiverState.VIDEO_REQUESTED,
+            ReceiverState.WAITING_FOR_SURFACE,
+            ReceiverState.VIDEO_STARTING,
+            ReceiverState.VIDEO_ACTIVE,
+            ReceiverState.VIDEO_STALLED
+        )
 
         init {
             System.loadLibrary("raop_server")

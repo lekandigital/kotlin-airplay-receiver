@@ -50,7 +50,7 @@ flowchart LR
 
 `ReceiverRuntime` records recent `StateTransition` entries for diagnostics and rejects invalid transitions in `isValidTransition()`. `ReceiverSessionStats` tracks duration, rendered video frames, decoder restarts, audio underruns, pre-surface buffering, and the last disconnect reason when known.
 
-`FIRST_RUN` and `PAIRING` are scaffolding states in this pass. First-run is handled by `OnboardingActivity`. Pairing can show a temporary TV PIN placeholder, but discovery remains on the working `pw=false` path and no secure native PIN check is enforced yet.
+`FIRST_RUN` is handled by `OnboardingActivity`. `PAIRING` drives the TV PIN compatibility overlay for PIN modes. Discovery remains on the working `pw=false` path, so this is not cryptographic Apple PIN verification yet.
 
 ## Kotlin Application Layer
 
@@ -64,7 +64,7 @@ The ready screen is a dark, D-pad-focusable TV surface. It shows:
 - a short Control Center / Screen Mirroring hint
 - quality profile
 - security mode
-- Settings and Help actions
+- Settings, Quick Settings, and Help actions
 
 The ready screen intentionally does not show local IP address, receiver ID, RAOP prefix, or network diagnostics.
 
@@ -74,13 +74,15 @@ During video playback, the `SurfaceView` fills the screen according to the selec
 - Fill: preserve aspect ratio and crop edges if needed.
 - Stretch: fill the display even if aspect ratio changes.
 
-Pressing Select during video shows a remote-first playback overlay with quick actions for Stop, Screen Fit, Diagnostics, and Traffic. Back hides the overlay if visible; otherwise it stops/restarts the receiver and returns to ready. Back from the ready screen exits to the TV launcher.
+Pressing Select during video shows a remote-first Compose playback overlay with quick actions for Stop, Screen Fit, Audio Sync, Settings, Diagnostics, and Traffic. Back hides the overlay if visible; otherwise it stops/restarts the receiver and returns to ready. Back from the ready screen exits to the TV launcher.
 
-`OnboardingActivity` is the first Compose screen in this app. It uses `activity-compose`, Jetpack Compose UI primitives, and the AndroidX TV foundation dependency as the migration foothold for future TV-native screens. The flow remains remote-first with welcome, receiver name, security, quality, and connection-instruction steps, and it saves the same preferences used by the main settings screen.
+`OnboardingActivity` is the first full Compose screen in this app. It uses `activity-compose`, Jetpack Compose UI primitives, and the AndroidX TV foundation dependency as the migration foothold for future TV-native screens. The flow remains remote-first with welcome, receiver name, security, quality, and connection-instruction steps, and it saves the same preferences used by the main settings screen.
+
+`MainActivity` is now a hybrid screen: the default ready card, quick settings, and active video overlay are rendered by `ComposeView` hosts, while playback remains on the native-backed `SurfaceView` and audio/permission overlays remain View/XML based. This keeps the media path stable while TV-facing controls move to Compose.
 
 `SettingsActivity` is still XML/ListView based. It is organized into Receiver, Security, Display & Video, Audio, Network, Accessibility, Advanced, and About sections. It can edit receiver naming, persisted trust/block lists, guest mode, takeover protection, quality, screen fit, frame-rate matching, audio sync, audio-only style, visualizer, discovery restart, diagnostics, and receiver identity reset.
 
-`DiagnosticsActivity` displays `ReceiverRuntime.buildDiagnosticsReport()` and supports clipboard copy plus discovery restart. The report includes receiver identity, service names, network address, discovery status, current settings, current state, last session stats, suggestions, disconnect reason, and transition history.
+`DiagnosticsActivity` displays `ReceiverRuntime.buildDiagnosticsReport()` and supports clipboard copy, file export, and discovery restart. The report includes receiver identity, service names, network capabilities, multicast lock state, discovery status, current settings, playback metadata, detected frame rate, last session stats, suggestions, disconnect reason, and transition history.
 
 ## Preferences
 
@@ -91,6 +93,7 @@ Pressing Select during video shows a remote-first playback overlay with quick ac
 - quality profile
 - screen fit
 - audio sync offset
+- idle dimming
 - wake/display behavior
 - start on boot
 - after-disconnect behavior
@@ -100,11 +103,11 @@ Pressing Select during video shows a remote-first playback overlay with quick ac
 - security mode
 - guest mode
 - takeover protection
-- idle clock, reduce motion, frame-rate matching, and visualizer toggles
+- idle clock, reduce motion, frame-rate matching, verbose logging, and visualizer toggles
 
 Quality profiles map to existing `/info` stream-size plumbing. Low Latency, Compatibility, and Audio Stable advertise 720p. Balanced and Best Quality advertise 1080p. Auto uses display capability detection.
 
-Audio sync is stored and surfaced, but the playback delay hook is not applied in `AudioPlayer` yet. The Audio Stable quality profile uses larger Kotlin-side audio prebuffer and platform buffer settings.
+Audio sync is applied in `AudioPlayer`: positive offsets write initial silence and negative offsets drop initial PCM so the selected offset takes effect deterministically after flush/start. The Audio Stable quality profile uses larger Kotlin-side audio prebuffer and platform buffer settings.
 
 ## Discovery
 
@@ -119,14 +122,16 @@ Registrations are idempotent. If service name, type, port, and TXT attributes ha
 
 ## Security And Pairing
 
-The security settings model includes:
+The security settings model defaults to PIN for new devices and includes:
 
-- Open - no pairing required. This is the only enforced mode in this phase.
-- PIN for new devices. Planned native pairing mode.
-- PIN every session. Planned native pairing mode.
-- Trusted devices only. Planned native pairing mode.
+- PIN for new devices.
+- PIN every session.
+- Trusted devices only.
+- Open - no pairing required.
 
-Until native pairing is implemented, DNS-SD stays on the working `pw=false` path. Real security requires native AirPlay pairing support that can:
+Until native PIN verification is implemented, DNS-SD stays on the working `pw=false` path. The native RAOP control connection asks Kotlin whether to accept a sender using the sender remote address as the current identifier. That gate can reject blocked senders, reject untrusted senders in Trusted Only mode, and reject competing senders when takeover protection is set to reject.
+
+PIN modes currently show the TV PIN compatibility overlay before media UI continues. Unknown senders can be stored as trusted after that placeholder flow unless guest mode is enabled. This does not prove that the Apple sender entered the PIN; real cryptographic security still requires native AirPlay pairing support that can:
 
 - generate and display a PIN at connection time
 - validate the PIN in the native pairing exchange
@@ -134,9 +139,7 @@ Until native pairing is implemented, DNS-SD stays on the working `pw=false` path
 - store trusted and blocked devices
 - reject blocked or untrusted senders before media starts
 
-`SenderTrustStore` persists trusted and blocked devices using local preferences. The lists are manageable now, but they remain unpopulated and unenforced until native sender identifiers are available. Takeover protection is also a persisted preference only; active sender arbitration still needs native sender identity and connection-gating hooks.
-
-Those native pairing changes are deferred. The settings UI and PIN placeholder make the product model visible without claiming the security boundary is complete.
+`SenderTrustStore` persists trusted and blocked devices using local preferences. The current identifier is the native remote address; a future pairing exchange should replace it with a stable AirPlay identity.
 
 ## Media Playback
 
@@ -148,11 +151,16 @@ Those native pairing changes are deferred. The settings UI and PIN placeholder m
 - `getVideoHeight()`
 - `onSetAudioVolume(Float)`
 - `onAudioFlush()`
+- `onAudioMetadata(ByteArray)`
+- `onAudioCoverArt(ByteArray)`
+- `onAudioRemoteControlId(String?, String?)`
+- `onAudioProgress(Long, Long, Long)`
+- `shouldAcceptSender(String?, String?)`
 - `onStreamStopped()`
 
-`VideoPlayer` is a dedicated `MediaCodec` thread. It keeps bounded queues sized for the known Android TV startup path, preserves codec config, maintains frame dependencies before decode, drains stale output, and renders the newest decoded frame to the `SurfaceView`.
+`VideoPlayer` is a dedicated `MediaCodec` thread. It keeps bounded queues sized for the known Android TV startup path, preserves codec config, maintains frame dependencies before decode, drains stale output, and renders the newest decoded frame to the `SurfaceView`. `RaopServer` samples mirroring timestamps and passes a conservative detected frame-rate hint into `Surface.setFrameRate()` on API 30+.
 
-`AudioPlayer` is a dedicated `AudioTrack` thread. It writes PCM from direct `ByteBuffer` packets, prebuffers a bounded number of packets, uses blocking writes, and trims backlog to avoid unbounded latency.
+`AudioPlayer` is a dedicated `AudioTrack` thread. It writes PCM from direct `ByteBuffer` packets, prebuffers a bounded number of packets, applies the configured sync offset at start/flush, uses blocking writes, and trims backlog to avoid unbounded latency.
 
 `SpectrumVisualizerView` renders a low-cost audio-only bar visualizer from media byte samples. It reduces bar count on low-RAM devices, throttles updates, and respects the reduce-motion and visualizer settings.
 
@@ -176,7 +184,7 @@ Release posture in this pass:
 - `targetSdk 34`
 - `minSdk 27`
 - `arm64-v8a` and `armeabi-v7a`
-- Compose enabled for onboarding with `activity-compose`, Compose 1.3-era artifacts, and `androidx.tv:tv-foundation:1.0.0-alpha03`
+- Compose enabled for onboarding, the default ready screen, and the active video playback overlay with `activity-compose`, Compose 1.3-era artifacts, and `androidx.tv:tv-foundation:1.0.0-alpha03`
 - CMake shared linker flag `-Wl,-z,max-page-size=16384`
 - `assembleRelease` for APKs
 - `bundleRelease` for Android App Bundles

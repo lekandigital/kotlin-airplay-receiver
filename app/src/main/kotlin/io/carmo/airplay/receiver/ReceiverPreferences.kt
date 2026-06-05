@@ -46,15 +46,18 @@ object ReceiverPreferences {
     const val AUDIO_ONLY_BACKGROUND = "background"
     const val AUDIO_ONLY_STATUS = "status"
     const val AUDIO_ONLY_VISUALIZER = "visualizer"
+    const val AUDIO_ONLY_VISUALIZER_ONLY = "visualizer_only"
     const val AUDIO_ONLY_MINIMAL = "minimal"
 
     const val KEY_DIAGNOSTICS_LEVEL = "diagnostics_level"
     const val DIAGNOSTICS_OFF = "off"
     const val DIAGNOSTICS_BASIC = "basic"
+    const val KEY_VERBOSE_LOGGING = "verbose_logging"
 
     const val KEY_CUSTOM_DEVICE_NAME = "custom_device_name"
     const val KEY_FIRST_RUN_COMPLETE = "first_run_complete"
     const val KEY_IDLE_CLOCK_ENABLED = "idle_clock_enabled"
+    const val KEY_IDLE_DIM_MINUTES = "idle_dim_minutes"
     const val KEY_REDUCE_MOTION = "reduce_motion"
     const val KEY_FRAME_RATE_MATCHING = "frame_rate_matching"
     const val KEY_VISUALIZER_ENABLED = "visualizer_enabled"
@@ -167,8 +170,9 @@ object ReceiverPreferences {
         return when (audioOnlyDisplay(context)) {
             AUDIO_ONLY_STATUS -> "Metadata"
             AUDIO_ONLY_VISUALIZER -> "Metadata + visualizer"
+            AUDIO_ONLY_VISUALIZER_ONLY -> "Visualizer only"
             AUDIO_ONLY_MINIMAL -> "Minimal black"
-            else -> "Background"
+            else -> "Clock + visualizer"
         }
     }
 
@@ -210,16 +214,16 @@ object ReceiverPreferences {
     }
 
     fun securityMode(context: Context): String {
-        return prefs(context).getString(KEY_SECURITY_MODE, SECURITY_OPEN)
-            ?: SECURITY_OPEN
+        return prefs(context).getString(KEY_SECURITY_MODE, SECURITY_PIN_NEW_DEVICES)
+            ?: SECURITY_PIN_NEW_DEVICES
     }
 
     fun securityModeSummary(context: Context): String {
         return when (securityMode(context)) {
             SECURITY_OPEN -> "Open - no pairing"
-            SECURITY_PIN_EVERY_SESSION -> "Open now - PIN every session planned"
-            SECURITY_TRUSTED_ONLY -> "Open now - trusted only planned"
-            else -> "Open now - PIN for new devices planned"
+            SECURITY_PIN_EVERY_SESSION -> "PIN every session - compatibility mode"
+            SECURITY_TRUSTED_ONLY -> "Trusted only - compatibility mode"
+            else -> "PIN for new devices - compatibility mode"
         }
     }
 
@@ -239,6 +243,15 @@ object ReceiverPreferences {
         return prefs(context).getBoolean(KEY_IDLE_CLOCK_ENABLED, true)
     }
 
+    fun idleDimMinutes(context: Context): Int {
+        return prefs(context).getInt(KEY_IDLE_DIM_MINUTES, 10).coerceIn(0, 60)
+    }
+
+    fun idleDimSummary(context: Context): String {
+        val minutes = idleDimMinutes(context)
+        return if (minutes <= 0) "Off" else "After ${minutes}m"
+    }
+
     fun reduceMotion(context: Context): Boolean {
         return prefs(context).getBoolean(KEY_REDUCE_MOTION, false)
     }
@@ -249,6 +262,10 @@ object ReceiverPreferences {
 
     fun visualizerEnabled(context: Context): Boolean {
         return prefs(context).getBoolean(KEY_VISUALIZER_ENABLED, true)
+    }
+
+    fun verboseLogging(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_VERBOSE_LOGGING, false)
     }
 
     fun guestMode(context: Context): Boolean {
@@ -262,9 +279,9 @@ object ReceiverPreferences {
 
     fun takeoverProtectionSummary(context: Context): String {
         return when (takeoverProtection(context)) {
-            TAKEOVER_ASK -> "Ask on TV (planned)"
-            TAKEOVER_ALLOW -> "Allow takeover (planned)"
-            else -> "Reject while active (planned)"
+            TAKEOVER_ASK -> "Ask on TV"
+            TAKEOVER_ALLOW -> "Allow takeover"
+            else -> "Reject while active"
         }
     }
 

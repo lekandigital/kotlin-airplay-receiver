@@ -14,12 +14,17 @@ import android.view.KeyEvent
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class DiagnosticsActivity : Activity() {
 
     private lateinit var diagnosticsText: TextView
     private lateinit var copyButton: Button
     private lateinit var restartDiscoveryButton: Button
+    private lateinit var exportDiagnosticsButton: Button
     private var runtime: ReceiverRuntime? = null
     private var isBound = false
 
@@ -44,8 +49,10 @@ class DiagnosticsActivity : Activity() {
         diagnosticsText = findViewById(R.id.diagnostics_text)
         copyButton = findViewById(R.id.copy_diagnostics_button)
         restartDiscoveryButton = findViewById(R.id.restart_discovery_button)
+        exportDiagnosticsButton = findViewById(R.id.export_diagnostics_button)
         copyButton.setOnClickListener { copyDiagnostics() }
         restartDiscoveryButton.setOnClickListener { restartDiscovery() }
+        exportDiagnosticsButton.setOnClickListener { exportDiagnostics() }
         copyButton.post { copyButton.requestFocus() }
 
         startReceiverForegroundService()
@@ -88,6 +95,21 @@ class DiagnosticsActivity : Activity() {
         runtime?.refreshDiscovery()
         refreshDiagnostics()
         Toast.makeText(this, R.string.restart_discovery, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun exportDiagnostics() {
+        val report = diagnosticsText.text?.toString().orEmpty()
+        val timestamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val directory = File(getExternalFilesDir(null) ?: filesDir, "diagnostics").apply {
+            mkdirs()
+        }
+        val reportFile = File(directory, "receiver-diagnostics-$timestamp.txt")
+        reportFile.writeText(report)
+        Toast.makeText(
+            this,
+            "${getString(R.string.diagnostics_saved)}: ${reportFile.absolutePath}",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun startReceiverForegroundService() {

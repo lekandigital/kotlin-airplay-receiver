@@ -14,7 +14,7 @@ The media path uses:
 - JNI direct buffers for native RAOP, mirroring, AAC, crypto, and DNS-SD interop.
 - A foreground service so Android treats the receiver as active while listening or playing.
 
-The UI is remote-first. Remote volume keys control Android media volume, and the traffic monitor is toggled from the playback overlay. Onboarding now uses Compose as the first migration surface; playback remains a View-based `SurfaceView` path so media rendering is not disturbed by the UI migration.
+The UI is remote-first. Remote volume keys control Android media volume, and the traffic monitor is toggled from the playback overlay. Onboarding, the default ready screen, and the active video overlay now use Compose as the first migration surfaces; playback remains a View-based `SurfaceView` path so media rendering is not disturbed by the UI migration.
 
 ## Ready Screen
 
@@ -26,11 +26,11 @@ The ready screen is intentionally simple:
 - short sender instructions
 - quality profile
 - security mode
-- D-pad actions for Settings and Help
+- D-pad actions for Settings, Quick Settings, and Help
 
 It avoids network addresses, receiver IDs, and discovery internals. Diagnostics remain available through settings.
 
-The current ready screen includes a clock with subtle pixel shifting. Reduce Motion disables movement. OLED dimming remains a follow-up setting because brightness control is device-specific on Android TV.
+The current ready screen includes a clock with subtle pixel shifting. Reduce Motion disables movement. OLED dimming is implemented as UI-level dimming after a configurable idle interval so it does not depend on device-specific TV brightness APIs.
 
 ## Quality And Display
 
@@ -51,7 +51,7 @@ The video surface supports three fit modes:
 
 Fit is the default because it avoids distortion. Fill is useful when a user wants all TV pixels covered. Stretch exists for compatibility with unusual sender/display combinations.
 
-Frame-rate matching is exposed as a setting and uses `Surface.setFrameRate()` on API 30+ with a 60 fps fixed-source hint. Sender frame-rate detection is not implemented yet, so cadence-specific hints remain follow-up work.
+Frame-rate matching is exposed as a setting and uses `Surface.setFrameRate()` on API 30+. `RaopServer` estimates common sender cadences from mirroring timestamps and falls back to 60 fps when timestamps are missing, unstable, or outside the supported range.
 
 ## Hot Path
 
@@ -75,12 +75,13 @@ Receiver prefers recovering to live playback over building delay:
 - Codec config is preserved for decoder restarts.
 - Dependent video frames are kept in order before decode.
 - Stale decoded output is drained so the newest waiting frame is rendered.
+- Startup and render watchdogs only restart video decode when recent video packets are present; audio, feedback, or timing traffic alone is not treated as decoder progress.
 - Audio uses a bounded queue, conservative prebuffer, and blocking writes.
 - Queue pressure drops old audio packets instead of allowing unbounded delay.
 - Playback threads use urgent display/audio priorities.
 - Frame-level logging is disabled in normal builds.
 
-The audio sync setting is stored in preferences but is not applied in `AudioPlayer` yet. Applying it safely requires explicit buffer/delay behavior and testing across HDMI, ARC, Bluetooth, and TV speaker outputs. The Audio Stable quality profile increases Kotlin-side queue headroom, prebuffering, and the platform buffer multiplier for underrun-prone routes.
+The audio sync setting is applied in `AudioPlayer`. Positive offsets write initial silence before the first packet; negative offsets drop initial PCM. Changing the value flushes and re-primes playback so behavior remains deterministic. The Audio Stable quality profile increases Kotlin-side queue headroom, prebuffering, and the platform buffer multiplier for underrun-prone routes.
 
 ## Audio Route Awareness
 
@@ -91,7 +92,7 @@ The playback overlay reports the current likely output route using Android outpu
 - TV speakers
 - system output fallback
 
-Route-specific sync offsets and Bluetooth latency warnings are not implemented yet. Those should be added after the receiver can observe route changes and re-check playback timing without destabilizing `AudioTrack`.
+The UI refreshes on route changes and warns on Bluetooth routes that audio sync may be needed. Route-specific persisted sync offsets remain future work because Android TV devices expose route identity inconsistently.
 
 ## Audio-Only Visualizer
 

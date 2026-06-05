@@ -6,9 +6,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.session.MediaSession
 import android.media.MediaMetadata
 import android.media.session.PlaybackState
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -66,11 +70,18 @@ class ReceiverRuntime(private val context: Context) {
     private val streamStatusListeners = CopyOnWriteArrayList<(String) -> Unit>()
     private val videoActivityListeners = CopyOnWriteArrayList<(Boolean) -> Unit>()
     private val videoSizeListeners = CopyOnWriteArrayList<(Int, Int) -> Unit>()
+    private val frameRateListeners = CopyOnWriteArrayList<(Float) -> Unit>()
     private val trafficListeners = CopyOnWriteArrayList<(Int) -> Unit>()
     private val latencyListeners = CopyOnWriteArrayList<(Long) -> Unit>()
+    private val audioNowPlayingListeners = CopyOnWriteArrayList<(AudioNowPlaying) -> Unit>()
     private val afterDisconnectListeners = CopyOnWriteArrayList<() -> Unit>()
 
+    @Volatile private var currentAudioMetadata = AirPlayMetadata()
+    @Volatile private var currentCoverArt: Bitmap? = null
+    @Volatile private var currentFrameRate = 60.0f
+
     val identity: ReceiverIdentity get() = ReceiverIdentity
+    val audioNowPlaying: AudioNowPlaying get() = AudioNowPlaying(currentAudioMetadata, currentCoverArt)
 
     /** The display name used for AirPlay advertisement, e.g. "Living Room TV". */
     val deviceDisplayName: String get() = dnsNotify?.deviceName ?: "Receiver"
@@ -100,10 +111,17 @@ class ReceiverRuntime(private val context: Context) {
     fun removeVideoActivityListener(l: (Boolean) -> Unit) = videoActivityListeners.remove(l)
     fun addVideoSizeListener(l: (Int, Int) -> Unit) = videoSizeListeners.add(l)
     fun removeVideoSizeListener(l: (Int, Int) -> Unit) = videoSizeListeners.remove(l)
+    fun addFrameRateListener(l: (Float) -> Unit) = frameRateListeners.add(l)
+    fun removeFrameRateListener(l: (Float) -> Unit) = frameRateListeners.remove(l)
     fun addTrafficListener(l: (Int) -> Unit) = trafficListeners.add(l)
     fun removeTrafficListener(l: (Int) -> Unit) = trafficListeners.remove(l)
     fun addLatencyListener(l: (Long) -> Unit) = latencyListeners.add(l)
     fun removeLatencyListener(l: (Long) -> Unit) = latencyListeners.remove(l)
+    fun addAudioNowPlayingListener(l: (AudioNowPlaying) -> Unit) {
+        audioNowPlayingListeners.add(l)
+        l(audioNowPlaying)
+    }
+    fun removeAudioNowPlayingListener(l: (AudioNowPlaying) -> Unit) = audioNowPlayingListeners.remove(l)
     fun addAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.add(l)
     fun removeAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.remove(l)
 
@@ -132,8 +150,11 @@ class ReceiverRuntime(private val context: Context) {
             onTrafficSample = ::onTrafficSample,
             onLatencySample = ::onLatencySample,
             onVideoSizeChanged = ::onVideoSizeChanged,
+            onFrameRateChanged = ::onFrameRateChanged,
             onStreamStatusChanged = ::onStreamStatusChanged,
             onStateChanged = ::onRaopStateChanged,
+            onAudioMetadataChanged = ::onAudioMetadataChanged,
+            onAudioCoverArtChanged = ::onAudioCoverArtChanged,
             initialVideoWidth = videoWidth,
             initialVideoHeight = videoHeight,
             initialAudioVolume = audioVolume
@@ -213,6 +234,10 @@ class ReceiverRuntime(private val context: Context) {
         raopServer?.setAudioVolume(currentAudioVolume)
     }
 
+    fun setAudioSyncMs(syncMs: Int) {
+        raopServer?.setAudioSyncMs(syncMs)
+    }
+
     fun updateDeviceName(name: String) {
         val sanitized = name.trim()
         val prefs = appContext.getSharedPreferences(ReceiverPreferences.PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -252,7 +277,8 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("AirPlay name: ${airplayServiceNameFor(deviceName)}")
             appendLine("RAOP name: ${ReceiverIdentity.raopPrefix(appContext)}$deviceName")
             appendLine()
-            appendLine("Network: ${getLocalIpAddress()}")
+            appendLine("Network:")
+            networkDiagnosticsLines().forEach { appendLine("  $it") }
             appendLine("State: $state")
             appendLine("Discovery status:")
             discoveryStatus.lineSequence().forEach { appendLine("  $it") }
@@ -263,6 +289,14 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("  Audio sync: ${ReceiverPreferences.audioSyncSummary(appContext)}")
             appendLine("  Security: ${ReceiverPreferences.securityModeSummary(appContext)}")
             appendLine("  Takeover: ${ReceiverPreferences.takeoverProtectionSummary(appContext)}")
+            appendLine("  Idle dimming: ${ReceiverPreferences.idleDimSummary(appContext)}")
+            appendLine("  Verbose logging: ${if (ReceiverPreferences.verboseLogging(appContext)) "on" else "off"}")
+            appendLine()
+            appendLine("Playback:")
+            appendLine("  Detected frame rate: ${"%.1f".format(Locale.US, currentFrameRate)}fps")
+            appendLine("  Audio metadata: ${currentAudioMetadata.title ?: "n/a"}")
+            appendLine("  Audio artist: ${currentAudioMetadata.artist ?: "n/a"}")
+            appendLine("  Cover art: ${if (currentCoverArt != null) "present" else "n/a"}")
             appendLine()
             appendLine("Last session:")
             appendLine("  Duration: ${formatDuration(stats.durationMs)}")
@@ -274,6 +308,7 @@ class ReceiverRuntime(private val context: Context) {
             appendLine()
             appendLine("Suggestions:")
             appendLine("  ${diagnosticSuggestion(stats)}")
+            networkWarning()?.let { appendLine("  $it") }
             appendLine()
             appendLine("Recent events:")
             if (transitions.isEmpty()) {
@@ -324,8 +359,35 @@ class ReceiverRuntime(private val context: Context) {
         videoSizeListeners.forEach { it(width, height) }
     }
 
+    private fun onFrameRateChanged(frameRate: Float) {
+        currentFrameRate = frameRate
+        frameRateListeners.forEach { it(frameRate) }
+    }
+
     private fun onLatencySample(latencyMs: Long) {
         latencyListeners.forEach { it(latencyMs) }
+    }
+
+    private fun onAudioMetadataChanged(update: AirPlayMetadata) {
+        mainHandler.post {
+            currentAudioMetadata = currentAudioMetadata.mergeWith(update)
+            notifyAudioNowPlayingChanged()
+            updateMediaSessionMetadata()
+        }
+    }
+
+    private fun onAudioCoverArtChanged(data: ByteArray) {
+        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size) ?: return
+        mainHandler.post {
+            currentCoverArt = bitmap
+            notifyAudioNowPlayingChanged()
+            updateMediaSessionMetadata()
+        }
+    }
+
+    private fun notifyAudioNowPlayingChanged() {
+        val nowPlaying = audioNowPlaying
+        audioNowPlayingListeners.forEach { it(nowPlaying) }
     }
 
     private fun onStreamStatusChanged(status: String) {
@@ -348,7 +410,7 @@ class ReceiverRuntime(private val context: Context) {
     }
 
     private fun shouldShowPairingPlaceholder(newState: ReceiverState): Boolean {
-        if (!ReceiverPreferences.requiresPairingPassword(appContext)) return false
+        if (raopServer?.hasPendingPairingSender() != true) return false
         if (state != ReceiverState.IDLE_ADVERTISING) return false
         return newState in setOf(
             ReceiverState.AUDIO_ACTIVE,
@@ -364,6 +426,7 @@ class ReceiverRuntime(private val context: Context) {
         transitionTo(ReceiverState.PAIRING, "pairing placeholder")
         mainHandler.postDelayed({
             if (state == ReceiverState.PAIRING) {
+                raopServer?.markPendingPairingAccepted()
                 pairingPin = null
                 transitionTo(nextState, "pairing placeholder accepted")
             }
@@ -489,10 +552,18 @@ class ReceiverRuntime(private val context: Context) {
     }
 
     private fun updateMediaSessionMetadata() {
+        val trackMetadata = currentAudioMetadata
         val metadata = MediaMetadata.Builder()
-            .putString(MediaMetadata.METADATA_KEY_TITLE, "AirPlay Audio")
-            .putString(MediaMetadata.METADATA_KEY_ARTIST, deviceDisplayName)
-            .putString(MediaMetadata.METADATA_KEY_ALBUM, appContext.getString(R.string.app_name))
+            .putString(MediaMetadata.METADATA_KEY_TITLE, trackMetadata.title ?: "AirPlay Audio")
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, trackMetadata.artist ?: trackMetadata.senderName ?: deviceDisplayName)
+            .putString(MediaMetadata.METADATA_KEY_ALBUM, trackMetadata.album ?: appContext.getString(R.string.app_name))
+            .apply {
+                currentCoverArt?.let { art ->
+                    putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art)
+                    putBitmap(MediaMetadata.METADATA_KEY_ART, art)
+                }
+                trackMetadata.progressEndMs?.let { putLong(MediaMetadata.METADATA_KEY_DURATION, it) }
+            }
             .build()
         mediaSession?.setMetadata(metadata)
     }
@@ -545,6 +616,54 @@ class ReceiverRuntime(private val context: Context) {
         }
     }
 
+    private fun networkDiagnosticsLines(): List<String> {
+        val connectivity = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivity.activeNetwork
+        val caps = network?.let { connectivity.getNetworkCapabilities(it) }
+        val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        @Suppress("DEPRECATION")
+        val ssid = wifiManager.connectionInfo?.ssid
+            ?.trim('"')
+            ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+            ?: "unknown"
+        val transports = mutableListOf<String>()
+        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) transports.add("Wi-Fi")
+        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) transports.add("Ethernet")
+        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) transports.add("VPN")
+        if (transports.isEmpty()) transports.add("unknown")
+        return listOf(
+            "IP address: ${getLocalIpAddress()}",
+            "SSID: $ssid",
+            "Transport: ${transports.joinToString(", ")}",
+            "Internet validated: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true}",
+            "Captive portal: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL) == true}",
+            "Multicast lock: ${multicastLock?.isHeld == true}"
+        )
+    }
+
+    private fun networkWarning(): String? {
+        val connectivity = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps = connectivity.activeNetwork?.let { connectivity.getNetworkCapabilities(it) }
+        @Suppress("DEPRECATION")
+        val ssid = (appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+            .connectionInfo
+            ?.ssid
+            ?.trim('"')
+            ?.lowercase(Locale.US)
+            .orEmpty()
+        return when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true ->
+                "VPN detected. AirPlay discovery may not cross the VPN route."
+            caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL) == true ->
+                "Captive portal detected. Finish network sign-in before using AirPlay."
+            "guest" in ssid ->
+                "Guest Wi-Fi detected. Router isolation may block AirPlay discovery."
+            getLocalIpAddress() == "unknown" ->
+                "No local IPv4 address detected. Check the TV network connection."
+            else -> null
+        }
+    }
+
     private fun acquireMulticastLock() {
         val lock = multicastLock ?: run {
             val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -590,6 +709,9 @@ class ReceiverRuntime(private val context: Context) {
             }
         } else if (old == ReceiverState.AUDIO_ACTIVE && newState != ReceiverState.AUDIO_ACTIVE) {
             releaseMediaSession()
+            currentAudioMetadata = AirPlayMetadata()
+            currentCoverArt = null
+            notifyAudioNowPlayingChanged()
         }
 
         if (newState == ReceiverState.VIDEO_REQUESTED) {

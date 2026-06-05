@@ -19,7 +19,8 @@ class VideoPlayer(
     private val onLatencySample: (Long) -> Unit = {},
     private val onFrameRendered: () -> Unit = {},
     private val onOutputSizeChanged: (Int, Int) -> Unit = { _, _ -> },
-    private val enableFrameRateHint: Boolean = false
+    private val enableFrameRateHint: Boolean = false,
+    private val sourceFrameRate: Float = DEFAULT_FRAME_RATE
 ) : Thread("ReceiverVideoPlayer") {
 
     private val bufferInfo = MediaCodec.BufferInfo()
@@ -107,7 +108,7 @@ class VideoPlayer(
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 videoFormat.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                videoFormat.setFloat(MediaFormat.KEY_OPERATING_RATE, VIDEO_OPERATING_RATE)
+                videoFormat.setFloat(MediaFormat.KEY_OPERATING_RATE, DEFAULT_FRAME_RATE)
             }
 
             codec.configure(videoFormat, surface, null, 0)
@@ -127,10 +128,10 @@ class VideoPlayer(
         }
         try {
             surface.setFrameRate(
-                VIDEO_OPERATING_RATE,
+                sourceFrameRate.takeIf { it in MIN_FRAME_RATE..MAX_FRAME_RATE } ?: DEFAULT_FRAME_RATE,
                 Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
             )
-            Log.i(TAG, "surface frame-rate hint set to ${VIDEO_OPERATING_RATE}fps")
+            Log.i(TAG, "surface frame-rate hint set to ${sourceFrameRate}fps")
         } catch (e: Throwable) {
             Log.w(TAG, "surface frame-rate hint failed", e)
         }
@@ -363,7 +364,9 @@ class VideoPlayer(
         private const val DROP_LOG_INTERVAL_MS = 2_000L
         private const val RENDER_LOG_INTERVAL_MS = 5_000L
         private const val MIME_TYPE = "video/avc"
-        private const val VIDEO_OPERATING_RATE = 60.0f
+        private const val DEFAULT_FRAME_RATE = 60.0f
+        private const val MIN_FRAME_RATE = 23.0f
+        private const val MAX_FRAME_RATE = 120.0f
         private const val TIMEOUT_USEC = 1000L
         private const val FORMAT_KEY_CROP_LEFT = "crop-left"
         private const val FORMAT_KEY_CROP_RIGHT = "crop-right"
