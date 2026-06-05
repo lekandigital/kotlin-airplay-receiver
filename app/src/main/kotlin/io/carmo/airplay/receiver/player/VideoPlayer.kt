@@ -43,6 +43,8 @@ class VideoPlayer(
     /** True once the decoder has produced and rendered at least one frame. */
     fun hasRenderedFirstFrame(): Boolean = hasRenderedFirstFrame
 
+    fun queueSize(): Int = packets.size
+
     fun addPacket(packet: NALPacket) {
         if (packet.isCodecConfig) {
             val old = pendingCodecConfig

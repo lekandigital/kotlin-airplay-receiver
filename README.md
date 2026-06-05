@@ -34,6 +34,7 @@ The receiver adapts to the sender orientation and preserves the source aspect ra
 - Visual themes for Midnight, Warm, and Light. Light mode is available for bright rooms and warns about OLED burn-in risk.
 - Optional background discovery keeps DNS-SD advertisements alive when the UI is not foregrounded, with a low-battery guard for portable Android TV devices.
 - Optional experimental HDMI-CEC wake tries Android TV HDMI control first and falls back to a wake lock. Hardware support varies by TV and input chain.
+- Optional experimental PINN adaptive streaming runs a tiny on-device Kotlin neural network to forecast buffer and thermal pressure, then applies conservative profile hints without exceeding the user-selected baseline.
 - Privacy-conscious session history stores recent local connection/performance diagnostics with hashed sender identifiers, optional hidden names, and a 100-session cap.
 - Diagnostics with state history, network/discovery status, feature states, session history summaries, session stats, suggestions, clipboard copy, and file export.
 - Release posture for Play TV: targetSdk 34, App Bundle output, 64-bit native libraries, and 16 KB page-size linker alignment.
@@ -114,6 +115,10 @@ Session history is stored locally in SQLite when enabled. Sender identifiers are
 ## Experimental Features
 
 HDMI-CEC wake is off by default under Settings > Experimental. When enabled, incoming AirPlay activity tries Android TV HDMI one-touch-play through reflection because some SDKs expose HDMI control only as a device API. If HDMI control is unavailable or fails, the app acquires a short wake lock instead. Either way, wake failure never rejects the AirPlay connection.
+
+Adaptive streaming (PINN) is also off by default under Settings > Experimental. It uses a pure Kotlin 16-32-16-6 feedforward model with 1,174 float weights, sampled every 500 ms from local throughput, latency, queue-size, frame-rate, loss, thermal-proxy, elapsed-time, and quality-profile features. The model observes for the first 60 seconds of a session, trains on-device every 30 seconds, persists its small binary weight file in internal storage, and can be reset from Settings.
+
+The PINN is deliberately advisory. A deterministic controller interprets predictions, requires consecutive votes before acting, never upgrades beyond the user’s baseline quality profile, and exposes a short playback-overlay notice when it auto-adjusts. On current AirPlay protocol paths, some quality changes are best-effort hints for future decoder setup rather than guaranteed sender-side renegotiation.
 
 ## Known Limits
 

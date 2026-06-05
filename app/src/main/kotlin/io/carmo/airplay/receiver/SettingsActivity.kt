@@ -22,6 +22,7 @@ import android.widget.EditText
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import io.carmo.airplay.receiver.pinn.PinnTelemetryCollector
 
 class SettingsActivity : Activity() {
 
@@ -166,18 +167,6 @@ class SettingsActivity : Activity() {
             ),
             SettingsRow.Section("Appearance"),
             SettingsRow.Item("app_theme", "Theme", "Midnight, warm, or light", ReceiverPreferences.appThemeSummary(this)),
-            SettingsRow.Item(
-                "weather_location",
-                "Weather location",
-                "Used by the weather idle screen",
-                prefs.getString(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME, null) ?: "Not set"
-            ),
-            SettingsRow.Item(
-                "photos_directory",
-                "Photos directory",
-                "Local storage directory for the photos idle screen",
-                prefs.getString(ReceiverPreferences.KEY_PHOTOS_DIRECTORY, null) ?: "Not set"
-            ),
             SettingsRow.Section("Audio"),
             SettingsRow.Item("audio_sync", "Audio sync", "Applied to AirPlay PCM playback", ReceiverPreferences.audioSyncSummary(this)),
             SettingsRow.Item("audio_only", "Audio-only screen", "Apple Music and other audio-only sessions", ReceiverPreferences.audioOnlyDisplaySummary(this)),
@@ -205,6 +194,18 @@ class SettingsActivity : Activity() {
                 if (ReceiverPreferences.reduceMotion(this)) "On" else "Off"
             ),
             SettingsRow.Section("Advanced"),
+            SettingsRow.Item(
+                "weather_location",
+                "Weather location",
+                "Advanced input for the weather idle screen",
+                prefs.getString(ReceiverPreferences.KEY_WEATHER_LOCATION_NAME, null) ?: "Not set"
+            ),
+            SettingsRow.Item(
+                "photos_directory",
+                "Photos directory",
+                "Advanced local-storage source for the photos idle screen",
+                prefs.getString(ReceiverPreferences.KEY_PHOTOS_DIRECTORY, null) ?: "Not set"
+            ),
             SettingsRow.Item("diagnostics_level", "Diagnostics", "Logging detail", ReceiverPreferences.diagnosticsSummary(this)),
             SettingsRow.Item(
                 "verbose_logging",
@@ -213,6 +214,30 @@ class SettingsActivity : Activity() {
                 if (ReceiverPreferences.verboseLogging(this)) "On" else "Off"
             ),
             SettingsRow.Section("Experimental"),
+            SettingsRow.Item(
+                "pinn_adaptive",
+                "Adaptive streaming (PINN)",
+                "Predicts stalls and thermal pressure with an on-device experimental model",
+                if (ReceiverPreferences.experimentalPinnAdaptive(this)) "On" else "Off"
+            ),
+            SettingsRow.Item(
+                "pinn_aggressiveness",
+                "PINN aggressiveness",
+                "How quickly adaptive streaming reacts",
+                ReceiverPreferences.pinnAggressivenessSummary(this)
+            ),
+            SettingsRow.Item(
+                "pinn_reset",
+                "Reset learned PINN model",
+                "Delete saved on-device model weights",
+                ""
+            ),
+            SettingsRow.Item(
+                "pinn_status",
+                "PINN status",
+                "Current model state",
+                runtime?.pinnDiagnostics()?.status ?: "disabled"
+            ),
             SettingsRow.Item(
                 "hdmi_cec_wake",
                 "CEC wake",
@@ -372,6 +397,18 @@ class SettingsActivity : Activity() {
                 ReceiverPreferences.DIAGNOSTICS_OFF
             )
             "verbose_logging" -> toggleBoolean(ReceiverPreferences.KEY_VERBOSE_LOGGING, false)
+            "pinn_adaptive" -> toggleBoolean(ReceiverPreferences.KEY_EXPERIMENTAL_PINN_ADAPTIVE, false)
+            "pinn_aggressiveness" -> cycleValue(
+                ReceiverPreferences.KEY_PINN_ADAPTATION_AGGRESSIVENESS,
+                listOf(
+                    ReceiverPreferences.PINN_AGGRESSIVENESS_CONSERVATIVE,
+                    ReceiverPreferences.PINN_AGGRESSIVENESS_MODERATE,
+                    ReceiverPreferences.PINN_AGGRESSIVENESS_AGGRESSIVE
+                ),
+                ReceiverPreferences.PINN_AGGRESSIVENESS_CONSERVATIVE
+            )
+            "pinn_reset" -> confirmResetPinnModel()
+            "pinn_status" -> Unit
             "hdmi_cec_wake" -> toggleBoolean(ReceiverPreferences.KEY_EXPERIMENTAL_HDMI_CEC_WAKE, false)
             "open_diagnostics" -> startActivity(Intent(this, DiagnosticsActivity::class.java))
             "restart_discovery" -> {
@@ -496,6 +533,19 @@ class SettingsActivity : Activity() {
             .setPositiveButton("Clear") { _, _ ->
                 SessionHistoryStore(this).clear()
                 Toast.makeText(this, "Session history cleared", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun confirmResetPinnModel() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset learned PINN model?")
+            .setMessage("This deletes the saved on-device adaptive streaming weights. The model will start in observation mode next session.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Reset") { _, _ ->
+                PinnTelemetryCollector.resetWeights(this)
+                Toast.makeText(this, "PINN model reset", Toast.LENGTH_SHORT).show()
+                rebuildRows()
             }
             .show()
     }

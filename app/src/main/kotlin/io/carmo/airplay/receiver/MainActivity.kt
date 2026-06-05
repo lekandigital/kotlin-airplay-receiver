@@ -208,6 +208,18 @@ class MainActivity : ComponentActivity() {
         runOnUiThread { moveTaskToBack(true) }
     }
 
+    private val pinnAdjustmentListener: (String) -> Unit = {
+        runOnUiThread {
+            val boundRuntime = runtime ?: return@runOnUiThread
+            if (isStreaming) {
+                streamOverlayUiState = buildStreamOverlayState(boundRuntime)
+                streamOverlay.visibility = View.VISIBLE
+                showControl(streamOverlay)
+                resetStreamOverlayTimer()
+            }
+        }
+    }
+
     private val hideAudioVolumeOverlay = Runnable {
         audioVolumeOverlay.visibility = View.GONE
     }
@@ -474,6 +486,7 @@ class MainActivity : ComponentActivity() {
         boundRuntime.addLatencyListener(latencyListener)
         boundRuntime.addAudioNowPlayingListener(audioNowPlayingListener)
         boundRuntime.addAfterDisconnectListener(afterDisconnectListener)
+        boundRuntime.addPinnAdjustmentListener(pinnAdjustmentListener)
     }
 
     private fun unregisterRuntimeListeners(boundRuntime: ReceiverRuntime) {
@@ -487,6 +500,7 @@ class MainActivity : ComponentActivity() {
         boundRuntime.removeLatencyListener(latencyListener)
         boundRuntime.removeAudioNowPlayingListener(audioNowPlayingListener)
         boundRuntime.removeAfterDisconnectListener(afterDisconnectListener)
+        boundRuntime.removePinnAdjustmentListener(pinnAdjustmentListener)
     }
 
     private fun syncRuntimeSettings(boundRuntime: ReceiverRuntime) {
@@ -1287,6 +1301,7 @@ class MainActivity : ComponentActivity() {
             ),
             trafficVisible = ::trafficMonitor.isInitialized && trafficMonitor.visibility == View.VISIBLE,
             appTheme = ReceiverPreferences.appTheme(this),
+            autoAdjustment = boundRuntime.currentPinnAdjustmentText(),
             selectedAction = streamOverlayUiState.selectedAction
         )
     }

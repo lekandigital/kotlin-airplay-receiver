@@ -96,6 +96,11 @@ object ReceiverPreferences {
     const val APP_THEME_LIGHT = "light"
 
     const val KEY_EXPERIMENTAL_HDMI_CEC_WAKE = "experimental_hdmi_cec_wake"
+    const val KEY_EXPERIMENTAL_PINN_ADAPTIVE = "experimental_pinn_adaptive"
+    const val KEY_PINN_ADAPTATION_AGGRESSIVENESS = "pinn_adaptation_aggressiveness"
+    const val PINN_AGGRESSIVENESS_CONSERVATIVE = "conservative"
+    const val PINN_AGGRESSIVENESS_MODERATE = "moderate"
+    const val PINN_AGGRESSIVENESS_AGGRESSIVE = "aggressive"
 
     const val KEY_STORE_SESSION_HISTORY = "store_session_history"
     const val KEY_HIDE_SENDER_NAMES_HISTORY = "hide_sender_names_history"
@@ -346,6 +351,25 @@ object ReceiverPreferences {
 
     fun experimentalHdmiCecWake(context: Context): Boolean {
         return prefs(context).getBoolean(KEY_EXPERIMENTAL_HDMI_CEC_WAKE, false)
+    }
+
+    fun experimentalPinnAdaptive(context: Context): Boolean {
+        return prefs(context).getBoolean(KEY_EXPERIMENTAL_PINN_ADAPTIVE, false)
+    }
+
+    fun pinnAggressiveness(context: Context): String {
+        return prefs(context).getString(
+            KEY_PINN_ADAPTATION_AGGRESSIVENESS,
+            PINN_AGGRESSIVENESS_CONSERVATIVE
+        ) ?: PINN_AGGRESSIVENESS_CONSERVATIVE
+    }
+
+    fun pinnAggressivenessSummary(context: Context): String {
+        return when (pinnAggressiveness(context)) {
+            PINN_AGGRESSIVENESS_MODERATE -> "Moderate"
+            PINN_AGGRESSIVENESS_AGGRESSIVE -> "Aggressive"
+            else -> "Conservative"
+        }
     }
 
     fun sessionHistoryEnabled(context: Context): Boolean {

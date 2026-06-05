@@ -61,6 +61,8 @@ class AudioPlayer(
         }
     }
 
+    fun queueSize(): Int = packets.size
+
     fun setVolume(volume: Float) {
         this.volume = volume.coerceIn(MIN_VOLUME, MAX_VOLUME)
         synchronized(playbackLock) {

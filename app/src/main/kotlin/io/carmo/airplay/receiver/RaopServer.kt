@@ -214,6 +214,15 @@ class RaopServer(
         stopVideoPlayer()
     }
 
+    fun setAdaptiveVideoMode(width: Int, height: Int) {
+        videoWidth = width
+        videoHeight = height
+    }
+
+    fun videoQueueSize(): Int = videoPlayer?.queueSize() ?: synchronized(preSurfaceLock) { preSurfaceBuffer.size }
+
+    fun audioQueueSize(): Int = audioPlayer?.queueSize() ?: 0
+
     fun setAudioVolume(volume: Float) {
         fallbackAudioVolume = volume.coerceIn(MIN_AUDIO_VOLUME, MAX_AUDIO_VOLUME)
         if (!hasSessionVolume) {

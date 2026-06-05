@@ -21,6 +21,10 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Surface
+import io.carmo.airplay.receiver.pinn.AdaptiveDecision
+import io.carmo.airplay.receiver.pinn.PinnDiagnostics
+import io.carmo.airplay.receiver.pinn.PinnDiagnosticsState
+import io.carmo.airplay.receiver.pinn.PinnTelemetryCollector
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.text.SimpleDateFormat
@@ -56,6 +60,9 @@ class ReceiverRuntime(private val context: Context) {
     @Volatile private var currentAudioVolume = 1.0f
     @Volatile private var activeHistorySessionId: Long? = null
     @Volatile private var activeHistorySessionType: String = "video"
+    @Volatile private var pinnCollector: PinnTelemetryCollector? = null
+    @Volatile private var lastPinnAdjustmentText: String = ""
+    @Volatile private var lastPinnAdjustmentAtMs: Long = 0L
 
     @Volatile var state: ReceiverState = ReceiverState.STOPPED
         private set
@@ -79,6 +86,7 @@ class ReceiverRuntime(private val context: Context) {
     private val latencyListeners = CopyOnWriteArrayList<(Long) -> Unit>()
     private val audioNowPlayingListeners = CopyOnWriteArrayList<(AudioNowPlaying) -> Unit>()
     private val afterDisconnectListeners = CopyOnWriteArrayList<() -> Unit>()
+    private val pinnAdjustmentListeners = CopyOnWriteArrayList<(String) -> Unit>()
 
     @Volatile private var currentAudioMetadata = AirPlayMetadata()
     @Volatile private var currentCoverArt: Bitmap? = null
@@ -128,6 +136,8 @@ class ReceiverRuntime(private val context: Context) {
     fun removeAudioNowPlayingListener(l: (AudioNowPlaying) -> Unit) = audioNowPlayingListeners.remove(l)
     fun addAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.add(l)
     fun removeAfterDisconnectListener(l: () -> Unit) = afterDisconnectListeners.remove(l)
+    fun addPinnAdjustmentListener(l: (String) -> Unit) = pinnAdjustmentListeners.add(l)
+    fun removePinnAdjustmentListener(l: (String) -> Unit) = pinnAdjustmentListeners.remove(l)
 
     @Synchronized
     fun start(videoWidth: Int, videoHeight: Int, audioVolume: Float) {
@@ -206,6 +216,7 @@ class ReceiverRuntime(private val context: Context) {
         isSurfaceAttached = false
         releaseMediaSession()
         dismissVideoStartedNotification()
+        stopPinnCollector()
         releaseMulticastLock()
         setStreamStatus("Waiting")
         setDiscoveryStatus("Discovery stopped")
@@ -300,7 +311,11 @@ class ReceiverRuntime(private val context: Context) {
             appendLine("  Background discovery: ${ReceiverPreferences.backgroundDiscoverySummary(appContext)}")
             appendLine("  Room presets: ${RoomPresetStore.presets(appContext).size}/${RoomPresetStore.MAX_PRESETS}")
             appendLine("  Active preset: ${RoomPresetStore.activePreset(appContext)?.name ?: "none"}")
+            appendLine("  PINN adaptive: ${if (ReceiverPreferences.experimentalPinnAdaptive(appContext)) "on" else "off"}")
+            appendLine("  PINN aggressiveness: ${ReceiverPreferences.pinnAggressivenessSummary(appContext)}")
             appendLine("  Verbose logging: ${if (ReceiverPreferences.verboseLogging(appContext)) "on" else "off"}")
+            appendLine()
+            PinnDiagnostics.format(pinnDiagnostics()).lineSequence().forEach { appendLine(it) }
             appendLine()
             val cec = hdmiCecWakeController.status()
             appendLine("CEC wake:")
@@ -730,6 +745,7 @@ class ReceiverRuntime(private val context: Context) {
         if (newState in ACTIVE_SESSION_STATES && old !in ACTIVE_SESSION_STATES) {
             hdmiCecWakeController.wakeForIncomingConnection()
             startHistorySession(newState)
+            startPinnCollector()
         }
 
         if (newState == ReceiverState.AUDIO_ACTIVE && old != ReceiverState.AUDIO_ACTIVE) {
@@ -763,6 +779,7 @@ class ReceiverRuntime(private val context: Context) {
 
         if (old == ReceiverState.STOPPING_SESSION && newState == ReceiverState.IDLE_ADVERTISING) {
             finishHistorySession()
+            stopPinnCollector()
             val afterDisconnect = ReceiverPreferences.afterDisconnect(appContext)
             if (afterDisconnect == ReceiverPreferences.AFTER_DISCONNECT_HOME) {
                 afterDisconnectListeners.forEach { it() }
@@ -786,6 +803,76 @@ class ReceiverRuntime(private val context: Context) {
         val stats = raopServer?.sessionStats() ?: ReceiverSessionStats()
         sessionHistoryStore.finishSession(id, stats, stats.lastDisconnectReason)
         activeHistorySessionId = null
+    }
+
+    fun videoQueueSizeForPinn(): Int = raopServer?.videoQueueSize() ?: 0
+
+    fun audioQueueSizeForPinn(): Int = raopServer?.audioQueueSize() ?: 0
+
+    fun sessionStatsForPinn(): ReceiverSessionStats = raopServer?.sessionStats() ?: ReceiverSessionStats()
+
+    fun currentFrameRateForPinn(): Float = currentFrameRate
+
+    fun pinnDiagnostics(): PinnDiagnosticsState {
+        return pinnCollector?.diagnostics() ?: PinnDiagnosticsState(
+            enabled = ReceiverPreferences.experimentalPinnAdaptive(appContext),
+            status = if (ReceiverPreferences.experimentalPinnAdaptive(appContext)) {
+                "waiting for session"
+            } else {
+                "disabled"
+            }
+        )
+    }
+
+    fun currentPinnAdjustmentText(): String {
+        val age = System.currentTimeMillis() - lastPinnAdjustmentAtMs
+        return if (age in 0..PINN_ADJUSTMENT_VISIBLE_MS) lastPinnAdjustmentText else ""
+    }
+
+    private fun startPinnCollector() {
+        if (!ReceiverPreferences.experimentalPinnAdaptive(appContext) || pinnCollector != null) {
+            return
+        }
+        pinnCollector = PinnTelemetryCollector(appContext, this, ::handlePinnDecision).also { it.start() }
+    }
+
+    private fun stopPinnCollector() {
+        pinnCollector?.stop()
+        pinnCollector = null
+    }
+
+    private fun handlePinnDecision(decision: AdaptiveDecision) {
+        val targetProfile = decision.targetProfile ?: return
+        mainHandler.post {
+            val size = videoSizeForAdaptiveProfile(targetProfile)
+            raopServer?.setAdaptiveVideoMode(size.width, size.height)
+            lastPinnAdjustmentText = "Auto-adjusted to ${labelForAdaptiveProfile(targetProfile)}"
+            lastPinnAdjustmentAtMs = System.currentTimeMillis()
+            pinnAdjustmentListeners.forEach { it(lastPinnAdjustmentText) }
+            Log.i(TAG, "PINN ${decision.action}: target=$targetProfile reason=${decision.reason}")
+        }
+    }
+
+    private fun videoSizeForAdaptiveProfile(profile: String): ReceiverPreferences.VideoSize {
+        return when (profile) {
+            ReceiverPreferences.QUALITY_COMPATIBILITY,
+            ReceiverPreferences.QUALITY_LOW_LATENCY,
+            ReceiverPreferences.QUALITY_AUDIO_STABLE -> ReceiverPreferences.VideoSize(1280, 720, labelForAdaptiveProfile(profile), "720p")
+            ReceiverPreferences.QUALITY_BALANCED,
+            ReceiverPreferences.QUALITY_BEST -> ReceiverPreferences.VideoSize(1920, 1080, labelForAdaptiveProfile(profile), "1080p")
+            else -> ReceiverPreferences.selectedVideoSize(appContext)
+        }
+    }
+
+    private fun labelForAdaptiveProfile(profile: String): String {
+        return when (profile) {
+            ReceiverPreferences.QUALITY_COMPATIBILITY -> "Compatibility"
+            ReceiverPreferences.QUALITY_LOW_LATENCY -> "Low Latency"
+            ReceiverPreferences.QUALITY_AUDIO_STABLE -> "Audio Stable"
+            ReceiverPreferences.QUALITY_BALANCED -> "Balanced"
+            ReceiverPreferences.QUALITY_BEST -> "Best Quality"
+            else -> "Auto"
+        }
     }
 
     private fun isValidTransition(old: ReceiverState, new: ReceiverState): Boolean {
@@ -876,6 +963,7 @@ class ReceiverRuntime(private val context: Context) {
         private const val MAX_SERVICE_NAME_LENGTH = 63
         private const val AIRPLAY_SERVICE_SUFFIX = " AirPlay"
         private const val PAIRING_PLACEHOLDER_MS = 4_000L
+        private const val PINN_ADJUSTMENT_VISIBLE_MS = 3_000L
         private val PAIRING_RANDOM = SecureRandom()
         private val ACTIVE_SESSION_STATES = setOf(
             ReceiverState.AUDIO_ACTIVE,
